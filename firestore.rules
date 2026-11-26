@@ -173,7 +173,7 @@ service cloud.firestore {
       allow delete: if false;
 
       match /projects/{projectId} {
-        allow get: if isValidId(projectId) && isOwner(userId) && existing().ownerId == userId;
+        allow get: if isValidId(projectId) && isOwner(userId) && (resource == null || existing().ownerId == userId);
         allow list: if isOwner(userId) && resource.data.ownerId == userId;
         allow create: if isValidId(projectId) && isOwner(userId)
           && isValidProject(incoming(), userId, projectId)
@@ -194,7 +194,7 @@ service cloud.firestore {
       }
 
       match /tasks/{taskId} {
-        allow get: if isValidId(taskId) && isOwner(userId) && existing().ownerId == userId;
+        allow get: if isValidId(taskId) && isOwner(userId) && (resource == null || existing().ownerId == userId);
         allow list: if isOwner(userId) && resource.data.ownerId == userId;
         allow create: if isValidId(taskId) && isOwner(userId)
           && isValidTask(incoming(), userId, taskId)
@@ -233,7 +233,7 @@ service cloud.firestore {
       }
 
       match /progressLogs/{logId} {
-        allow get: if isValidId(logId) && isOwner(userId) && existing().ownerId == userId;
+        allow get: if isValidId(logId) && isOwner(userId) && (resource == null || existing().ownerId == userId);
         allow list: if isOwner(userId) && resource.data.ownerId == userId;
         allow create: if isValidId(logId) && isOwner(userId)
           && isValidProgressLog(incoming(), userId, logId)
@@ -253,7 +253,7 @@ service cloud.firestore {
       }
 
       match /activityNodes/{nodeId} {
-        allow get: if isValidId(nodeId) && isOwner(userId) && existing().ownerId == userId;
+        allow get: if isValidId(nodeId) && isOwner(userId) && (resource == null || existing().ownerId == userId);
         allow list: if isOwner(userId) && resource.data.ownerId == userId;
         allow create: if isValidId(nodeId) && isOwner(userId)
           && isValidActivityNode(incoming(), userId, nodeId)
@@ -273,7 +273,7 @@ service cloud.firestore {
       }
 
       match /scheduleLogs/{logId} {
-        allow get: if isValidId(logId) && isOwner(userId) && existing().ownerId == userId;
+        allow get: if isValidId(logId) && isOwner(userId) && (resource == null || existing().ownerId == userId);
         allow list: if isOwner(userId) && resource.data.ownerId == userId;
         allow create: if isValidId(logId) && isOwner(userId)
           && isValidScheduleLog(incoming(), userId, logId)
@@ -283,7 +283,7 @@ service cloud.firestore {
       }
 
       match /settings/{settingId} {
-        allow get: if isValidId(settingId) && isOwner(userId) && existing().ownerId == userId;
+        allow get: if isValidId(settingId) && isOwner(userId) && (resource == null || existing().ownerId == userId);
         allow list: if isOwner(userId) && resource.data.ownerId == userId;
         allow create: if isValidId(settingId) && isOwner(userId)
           && isValidSettings(incoming(), userId, settingId)

@@ -49,6 +49,8 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   const [status, setStatus] = useState<ProjectStatus>('active');
   const [progressMode, setProgressMode] = useState<'auto' | 'manual'>('auto');
   const [manualProgress, setManualProgress] = useState(0);
+  const [formError, setFormError] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
   const [unlinkTasksOnDelete, setUnlinkTasksOnDelete] = useState(true);
@@ -63,6 +65,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     setStatus('active');
     setProgressMode('auto');
     setManualProgress(0);
+    setFormError('');
     setShowForm(true);
   };
 
@@ -74,33 +77,42 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
     setStatus(project.status);
     setProgressMode(project.progressMode);
     setManualProgress(project.manualProgress);
+    setFormError('');
     setShowForm(true);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) return;
-
-    if (editingProject) {
-      await updateProject(editingProject.id, {
-        name,
-        description,
-        color,
-        status,
-        progressMode,
-        manualProgress,
-      });
-    } else {
-      await createProject({
-        name,
-        description,
-        color,
-        status,
-        progressMode,
-        manualProgress,
-      });
+    setSaving(true);
+    setFormError('');
+    try {
+      if (editingProject) {
+        await updateProject(editingProject.id, {
+          name,
+          description,
+          color,
+          status,
+          progressMode,
+          manualProgress,
+        });
+      } else {
+        await createProject({
+          name,
+          description,
+          color,
+          status,
+          progressMode,
+          manualProgress,
+        });
+      }
+      setShowForm(false);
+    } catch (err) {
+      console.error('Failed to save project:', err);
+      setFormError('保存项目失败，请检查网络连接后重试');
+    } finally {
+      setSaving(false);
     }
-    setShowForm(false);
   };
 
   const selectedProject = useMemo(
@@ -370,11 +382,9 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
       {showForm && (
         <div
           className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4"
-          onClick={() => setShowForm(false)}
         >
           <div
             className="w-full sm:max-w-md bg-white dark:bg-slate-900 rounded-t-3xl sm:rounded-2xl border border-slate-200 dark:border-slate-800 p-5 pb-safe shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
@@ -390,6 +400,11 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-4">
+              {formError && (
+                <div className="rounded-xl border border-rose-200 dark:border-rose-900/70 bg-rose-50 dark:bg-rose-950/40 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+                  {formError}
+                </div>
+              )}
               <div>
                 <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
                   项目名称 <span className="text-rose-500">*</span>
@@ -499,9 +514,10 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="min-h-[44px] px-5 rounded-xl bg-blue-600 text-white text-sm font-medium hover:bg-blue-700"
+                  disabled={saving}
+                  className="min-h-[44px] px-5 rounded-xl bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
                 >
-                  {editingProject ? '保存修改' : '创建项目'}
+                  {saving ? '保存中...' : editingProject ? '保存修改' : '创建项目'}
                 </button>
               </div>
             </form>

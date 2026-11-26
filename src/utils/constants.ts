@@ -117,16 +117,16 @@ export const PROJECT_STATUS_META: Record<ProjectStatus, { label: string; textCla
   archived: { label: '归档', textClass: 'text-slate-500 dark:text-slate-400' },
 };
 
-// Distinct muted palette for projects (strictly separated from P1 red, P2 amber, P3 sky, P4 slate)
+// Vibrant dopamine palette for projects (bright, energetic, clearly separated hues)
 export const PROJECT_COLORS = [
-  { name: '靛青', hex: '#4F46E5' },
-  { name: '松石绿', hex: '#0D9488' },
-  { name: '梅紫', hex: '#9333EA' },
-  { name: '森林绿', hex: '#059669' },
-  { name: '湖蓝', hex: '#0891B2' },
-  { name: '暮紫', hex: '#7C3AED' },
-  { name: '黛青', hex: '#334155' },
-  { name: '绛紫', hex: '#BE185D' },
+  { name: '草莓粉', hex: '#FF3B6B' },
+  { name: '活力橙', hex: '#FF7A00' },
+  { name: '芒果黄', hex: '#F59E0B' },
+  { name: '青柠绿', hex: '#22C55E' },
+  { name: '薄荷青', hex: '#00C2A8' },
+  { name: '晴空蓝', hex: '#0EA5E9' },
+  { name: '电光蓝', hex: '#3B82F6' },
+  { name: '多巴胺紫', hex: '#A855F7' },
 ];
 
 export const DDL_URGENCY_META: Record<

@@ -23,6 +23,7 @@ import {
 } from '../../types/models';
 import { PRIORITY_META } from '../../utils/constants';
 import {
+  addDaysToLocalDate,
   diffLocalDays,
   formatPlannedDate,
   formatTimestamp,
@@ -178,7 +179,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     if (!quickTitle.trim() || addingQuick) return;
     setAddingQuick(true);
     try {
-      await createTask({ title: quickTitle.trim() });
+      const start = toLocalDateString();
+      await createTask({
+        title: quickTitle.trim(),
+        plannedStartDate: start,
+        plannedEndDate: addDaysToLocalDate(start, 7),
+        priority: 'P2',
+        progress: 0,
+      });
       setQuickTitle('');
     } finally {
       setAddingQuick(false);

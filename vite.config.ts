@@ -17,7 +17,7 @@ export default defineConfig(() => {
           id: '/',
           name: '时序 ChronoPlan - 个人项目管理与时间规划',
           short_name: '时序',
-          description: '手机端优先的本地个人项目管理、时间轴甘特图与执行追踪应用，离线可用，数据完全保存在本地设备。',
+          description: '手机端优先的个人项目管理、时间轴甘特图与执行追踪应用，支持账号登录与跨设备实时云同步。',
           theme_color: '#F8F9FA',
           background_color: '#F8F9FA',
           display: 'standalone',

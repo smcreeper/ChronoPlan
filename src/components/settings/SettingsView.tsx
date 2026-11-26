@@ -33,7 +33,6 @@ import {
 import { APP_VERSION } from '../../utils/constants';
 import { toLocalDateString } from '../../utils/dateUtils';
 import { ConfirmDialog } from '../common/ConfirmDialog';
-import { PWAInstallButton } from '../common/PWAInstallButton';
 
 interface SettingsViewProps {
   settings: AppSettings;
@@ -41,6 +40,7 @@ interface SettingsViewProps {
   syncState: 'local' | 'syncing' | 'synced' | 'error';
   onSignIn: () => Promise<void>;
   onSignOut: () => Promise<void>;
+  onRetrySync?: () => void;
   stats: {
     tasks: number;
     projects: number;
@@ -56,6 +56,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   syncState,
   onSignIn,
   onSignOut,
+  onRetrySync,
   stats,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -135,7 +136,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       <div>
         <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100">设置与数据管理</h1>
         <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-          支持登录 Google 账号进行跨网页端实时云同步，并保留离线本地缓存与 JSON 备份能力
+          支持登录 Google 账号进行跨网页端实时云同步，并支持 JSON 数据备份与恢复
         </p>
       </div>
 
@@ -145,25 +146,39 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <div className="flex items-start gap-3">
             <div
               className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
-                cloudUser
+                cloudUser && syncState === 'synced'
                   ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400'
+                  : cloudUser && syncState === 'error'
+                  ? 'bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400'
+                  : cloudUser
+                  ? 'bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400'
                   : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
               }`}
             >
-              {cloudUser ? <Cloud className="w-5 h-5" /> : <CloudOff className="w-5 h-5" />}
+              {cloudUser && syncState !== 'error' ? <Cloud className="w-5 h-5" /> : <CloudOff className="w-5 h-5" />}
             </div>
             <div>
               <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                {cloudUser ? '网页端云同步已开启' : '当前仅本地浏览器存储'}
+                {!cloudUser
+                  ? '尚未登录云同步账号'
+                  : syncState === 'synced'
+                  ? '已登录 · 云端实时同步中'
+                  : syncState === 'syncing'
+                  ? '已登录 · 正在同步云端数据'
+                  : syncState === 'error'
+                  ? '已登录 · 云同步连接异常'
+                  : '已登录云同步账号'}
               </div>
               <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                 {cloudUser
                   ? `已绑定账号：${cloudUser.email || cloudUser.displayName || 'Google 用户'}（${
                       syncState === 'syncing'
-                        ? '正在同步...'
+                        ? '正在拉取与校准最新数据...'
                         : syncState === 'error'
-                        ? '同步出错'
-                        : '每次打开网页端自动同步最新任务与进度'
+                        ? '同步出错，请检查网络或重试'
+                        : syncState === 'synced'
+                        ? '每次打开网页端自动同步最新任务与进度'
+                        : '仅登录状态，等待同步'
                     }）`
                   : '登录 Google 账号后，每次在任意电脑或手机浏览器打开网页，都将显示完全一致的任务与进度。'}
               </div>
@@ -171,14 +186,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
 
           {cloudUser ? (
-            <button
-              type="button"
-              onClick={onSignOut}
-              className="inline-flex items-center justify-center gap-1.5 min-h-[40px] px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 shrink-0 whitespace-nowrap"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>退出云同步</span>
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              {syncState === 'error' && onRetrySync && (
+                <button
+                  type="button"
+                  onClick={onRetrySync}
+                  className="inline-flex items-center justify-center gap-1.5 min-h-[40px] px-3.5 py-2 rounded-xl bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 whitespace-nowrap"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>重试同步</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={onSignOut}
+                className="inline-flex items-center justify-center gap-1.5 min-h-[40px] px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 whitespace-nowrap"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>退出账号</span>
+              </button>
+            </div>
           ) : (
             <button
               type="button"
@@ -311,26 +338,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         </div>
       </section>
 
-      {/* PWA & Mobile Install */}
-      <section className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              安装到手机主屏幕与离线运行
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              支持以独立应用窗口启动，核心任务、甘特图与记录功能在无网络环境下依然可用
-            </p>
-          </div>
-          <PWAInstallButton />
-        </div>
-      </section>
-
       {/* Data Backup, Export & Import */}
       <section className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 space-y-4">
         <div>
           <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-            本地数据备份与迁移
+            数据备份与迁移
           </h2>
           <div className="mt-2 grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
             <div className="rounded-xl bg-slate-50 dark:bg-slate-950 p-2.5 border border-slate-100 dark:border-slate-800">
@@ -369,7 +381,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         <div className="rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-950/30 p-3 flex items-start gap-2.5 text-xs text-amber-800 dark:text-amber-200 leading-relaxed">
           <ShieldAlert className="w-4 h-4 mt-0.5 shrink-0" />
           <span>
-            重要提醒：本地数据仅保存在当前浏览器 IndexedDB 存储中，若清除浏览器缓存、卸载浏览器或更换设备可能会导致数据丢失。建议定期点击下方「导出 JSON 备份」妥善保存。
+            重要提醒：未登录云同步账号时，数据仅保存在当前浏览器缓存中，清除缓存或更换设备可能导致数据丢失。建议登录账号开启云同步，并定期点击下方「导出 JSON 备份」妥善保存。
           </span>
         </div>
 
@@ -425,18 +437,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
       {/* Version Info */}
       <div className="text-center sm:text-left text-xs text-slate-400 dark:text-slate-500 pt-1">
-        时序 ChronoPlan · 版本 v{APP_VERSION} · 纯本地离线个人规划工具
+        时序 ChronoPlan · 版本 v{APP_VERSION} · 跨端云同步个人规划工具
       </div>
 
       {/* Import Choice Dialog */}
       {pendingImport && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4"
-          onClick={() => setPendingImport(null)}
         >
           <div
             className="w-full max-w-md rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-5 shadow-2xl space-y-4"
-            onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
               选择数据导入方式

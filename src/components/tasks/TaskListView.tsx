@@ -30,6 +30,7 @@ import {
   STATUS_OPTIONS,
 } from '../../utils/constants';
 import {
+  addDaysToLocalDate,
   formatPlannedDate,
   getDdlUrgency,
   isTaskUnscheduled,
@@ -151,12 +152,17 @@ export const TaskListView: React.FC<TaskListViewProps> = ({
   const handleQuickCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!quickTitle.trim()) return;
+    const start = toLocalDateString();
     await createTask({
       title: quickTitle.trim(),
       projectId:
         filters.projectId !== 'all' && filters.projectId !== 'unassigned'
           ? filters.projectId
           : null,
+      plannedStartDate: start,
+      plannedEndDate: addDaysToLocalDate(start, 7),
+      priority: 'P2',
+      progress: 0,
     });
     setQuickTitle('');
   };

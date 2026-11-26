@@ -15,12 +15,14 @@ export const DeferModal: React.FC<DeferModalProps> = ({ open, task, settings, on
   const [newEndDate, setNewEndDate] = useState('');
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     if (!open || !task) return;
     const base = task.plannedEndDate ?? toLocalDateString();
     setNewEndDate(addDaysToLocalDate(base, 3));
     setReason('');
+    setError('');
   }, [open, task]);
 
   if (!open || !task) return null;
@@ -39,9 +41,13 @@ export const DeferModal: React.FC<DeferModalProps> = ({ open, task, settings, on
     e.preventDefault();
     if (!newEndDate || invalidStartOrder) return;
     setSaving(true);
+    setError('');
     try {
       await deferTaskDeadline(task.id, newEndDate, reason);
       onClose();
+    } catch (err) {
+      console.error('Failed to defer task:', err);
+      setError('保存延期失败，请检查网络连接后重试');
     } finally {
       setSaving(false);
     }
@@ -50,11 +56,9 @@ export const DeferModal: React.FC<DeferModalProps> = ({ open, task, settings, on
   return (
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4"
-      onClick={onClose}
     >
       <div
         className="w-full sm:max-w-md bg-white dark:bg-slate-900 rounded-t-3xl sm:rounded-2xl border border-slate-200 dark:border-slate-800 p-5 pb-safe shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
       >
@@ -76,6 +80,11 @@ export const DeferModal: React.FC<DeferModalProps> = ({ open, task, settings, on
         </div>
 
         <form onSubmit={handleConfirm} className="space-y-4">
+          {error && (
+            <div className="rounded-xl border border-rose-200 dark:border-rose-900/70 bg-rose-50 dark:bg-rose-950/40 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+              {error}
+            </div>
+          )}
           <div className="rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 p-3 text-xs space-y-1">
             <div className="font-medium text-slate-900 dark:text-slate-100 truncate">
               {task.title}

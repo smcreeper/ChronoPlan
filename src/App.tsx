@@ -34,9 +34,8 @@ import {
 import { auth, signInWithGoogle, signOutUser } from './firebase';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { NavTab, Task, TaskFilterState } from './types/models';
-import { toLocalDateString } from './utils/dateUtils';
+import { addDaysToLocalDate, toLocalDateString } from './utils/dateUtils';
 import { DEFAULT_FILTERS } from './utils/taskFilters';
-import { PWAInstallButton } from './components/common/PWAInstallButton';
 import { DashboardView } from './components/dashboard/DashboardView';
 import { ProjectsView } from './components/projects/ProjectsView';
 import { SettingsView } from './components/settings/SettingsView';
@@ -58,6 +57,7 @@ export default function App() {
   const [cloudUser, setCloudUser] = useState<User | null>(null);
   const [syncState, setSyncState] = useState<'local' | 'syncing' | 'synced' | 'error'>('local');
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [syncRetryNonce, setSyncRetryNonce] = useState(0);
 
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -115,14 +115,29 @@ export default function App() {
 
         if (cancelled) return;
 
+        let projectsReady = false;
+        let tasksReady = false;
+        let listenerError = false;
+
+        const maybeMarkSynced = () => {
+          if (!cancelled && !listenerError && projectsReady && tasksReady) {
+            setSyncState('synced');
+            setSyncNotice(null);
+          }
+        };
+
         unsubCloud = subscribeUserCloudData(user.uid, {
           onProjects: (items) => {
-            replaceLocalProjects(items);
-            setSyncState('synced');
+            replaceLocalProjects(items).then(() => {
+              projectsReady = true;
+              maybeMarkSynced();
+            });
           },
           onTasks: (items) => {
-            replaceLocalTasks(items);
-            setSyncState('synced');
+            replaceLocalTasks(items).then(() => {
+              tasksReady = true;
+              maybeMarkSynced();
+            });
           },
           onProgressLogs: (items) => {
             replaceLocalProgressLogs(items);
@@ -135,6 +150,12 @@ export default function App() {
           },
           onSettings: (item) => {
             if (item) replaceLocalSettings(item);
+          },
+          onError: (err) => {
+            console.error('Cloud snapshot listener error:', err);
+            listenerError = true;
+            setSyncState('error');
+            setSyncNotice('云同步连接失败，当前暂使用本地缓存。');
           },
         });
       } catch (err) {
@@ -149,7 +170,7 @@ export default function App() {
       unsubAuth();
       if (unsubCloud) unsubCloud();
     };
-  }, [dbReady]);
+  }, [dbReady, syncRetryNonce]);
 
   const handleSignIn = async () => {
     try {
@@ -166,6 +187,11 @@ export default function App() {
   const handleSignOut = async () => {
     await signOutUser();
     setSyncNotice(null);
+  };
+
+  const handleRetrySync = () => {
+    setSyncNotice(null);
+    setSyncRetryNonce((n) => n + 1);
   };
 
   const tasks = useLiveQuery(() => db.tasks.toArray(), [], []);
@@ -249,7 +275,7 @@ export default function App() {
   if (!dbReady) {
     return (
       <div className="min-h-dvh flex items-center justify-center bg-[#F8F9FA] dark:bg-[#0B0F17] text-sm text-slate-500">
-        正在初始化本地与云同步引擎...
+        正在初始化应用与同步引擎...
       </div>
     );
   }
@@ -332,7 +358,7 @@ export default function App() {
           {!isOnline && (
             <div className="flex items-center gap-2 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
               <WifiOff className="w-3.5 h-3.5 shrink-0" />
-              <span>离线缓存运行中</span>
+              <span>网络已断开（暂存当前设备）</span>
             </div>
           )}
 
@@ -342,10 +368,26 @@ export default function App() {
               onClick={() => setActiveTab('settings')}
               className="w-full flex items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-800 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
             >
-              <Cloud className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              {syncState === 'error' ? (
+                <CloudOff className="w-4 h-4 text-rose-500 dark:text-rose-400 shrink-0" />
+              ) : (
+                <Cloud
+                  className={`w-4 h-4 shrink-0 ${
+                    syncState === 'synced'
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-blue-600 dark:text-blue-400'
+                  }`}
+                />
+              )}
               <div className="min-w-0 flex-1">
                 <div className="text-[11px] font-medium text-slate-900 dark:text-slate-100 truncate">
-                  {syncState === 'syncing' ? '正在云同步...' : '网页端云同步中'}
+                  {syncState === 'synced'
+                    ? '已同步 · 网页端实时同步'
+                    : syncState === 'syncing'
+                    ? '已登录 · 正在同步...'
+                    : syncState === 'error'
+                    ? '已登录 · 云同步失败'
+                    : '已登录'}
                 </div>
                 <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
                   {cloudUser.email}
@@ -362,8 +404,6 @@ export default function App() {
               <span>登录开启网页同步</span>
             </button>
           )}
-
-          <PWAInstallButton variant="compact" />
         </div>
       </aside>
 
@@ -376,16 +416,30 @@ export default function App() {
           {!isOnline ? (
             <span className="inline-flex items-center gap-1 text-[11px] text-amber-700 dark:text-amber-400 whitespace-nowrap">
               <WifiOff className="w-3 h-3" />
-              <span>离线</span>
+              <span>网络断开</span>
             </span>
           ) : cloudUser ? (
             <button
               type="button"
               onClick={() => setActiveTab('settings')}
-              className="inline-flex items-center gap-1 text-[11px] text-emerald-700 dark:text-emerald-400 whitespace-nowrap"
+              className={`inline-flex items-center gap-1 text-[11px] whitespace-nowrap ${
+                syncState === 'synced'
+                  ? 'text-emerald-700 dark:text-emerald-400'
+                  : syncState === 'error'
+                  ? 'text-rose-600 dark:text-rose-400'
+                  : 'text-blue-600 dark:text-blue-400'
+              }`}
             >
-              <Cloud className="w-3 h-3" />
-              <span>{syncState === 'syncing' ? '同步中' : '已同步'}</span>
+              {syncState === 'error' ? <CloudOff className="w-3 h-3" /> : <Cloud className="w-3 h-3" />}
+              <span>
+                {syncState === 'synced'
+                  ? '已同步'
+                  : syncState === 'syncing'
+                  ? '已登录 · 同步中'
+                  : syncState === 'error'
+                  ? '已登录 · 同步失败'
+                  : '已登录'}
+              </span>
             </button>
           ) : (
             <button
@@ -415,13 +469,24 @@ export default function App() {
           {syncNotice && (
             <div className="mb-4 rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/40 px-3.5 py-2.5 text-xs text-amber-800 dark:text-amber-200 flex items-center justify-between gap-2">
               <span>{syncNotice}</span>
-              <button
-                type="button"
-                onClick={() => setSyncNotice(null)}
-                className="text-amber-700 dark:text-amber-300 underline shrink-0"
-              >
-                关闭
-              </button>
+              <div className="flex items-center gap-3 shrink-0">
+                {cloudUser && syncState === 'error' && (
+                  <button
+                    type="button"
+                    onClick={handleRetrySync}
+                    className="font-medium text-blue-700 dark:text-blue-300 underline"
+                  >
+                    重试同步
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setSyncNotice(null)}
+                  className="text-amber-700 dark:text-amber-300 underline"
+                >
+                  关闭
+                </button>
+              </div>
             </div>
           )}
 
@@ -450,12 +515,13 @@ export default function App() {
               projects={projects}
               settings={settings}
               onSelectTask={(id) => setSelectedTaskId(id)}
-              onCreateTaskOnDate={(dateStr) =>
+              onCreateTaskOnDate={(dateStr) => {
+                const start = dateStr ?? toLocalDateString();
                 openNewTaskModal({
-                  startDate: dateStr ?? toLocalDateString(),
-                  endDate: dateStr ?? toLocalDateString(),
-                })
-              }
+                  startDate: start,
+                  endDate: addDaysToLocalDate(start, 7),
+                });
+              }}
             />
           )}
 
@@ -494,6 +560,7 @@ export default function App() {
               syncState={syncState}
               onSignIn={handleSignIn}
               onSignOut={handleSignOut}
+              onRetrySync={handleRetrySync}
               stats={dbStats}
             />
           )}

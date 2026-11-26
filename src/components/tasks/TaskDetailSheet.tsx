@@ -119,6 +119,7 @@ export const TaskDetailSheet: React.FC<TaskDetailSheetProps> = ({
   const [nodeDesc, setNodeDesc] = useState('');
   const [useCustomEventTime, setUseCustomEventTime] = useState(false);
   const [nodeEventAtInput, setNodeEventAtInput] = useState('');
+  const [sheetError, setSheetError] = useState('');
 
   const projectMap = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
 
@@ -154,22 +155,28 @@ export const TaskDetailSheet: React.FC<TaskDetailSheetProps> = ({
 
   const handleSaveProgressLog = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (editingProgLog) {
-      const isLatest = progressLogs[0]?.id === editingProgLog.id;
-      await updateProgressLog(
-        editingProgLog.id,
-        {
-          progress: progInput,
-          note: progNote,
-          loggedAt: progLoggedAtInput ? fromLocalDateTimeInputValue(progLoggedAtInput) : undefined,
-        },
-        isLatest
-      );
-    } else {
-      await logTaskProgress(task.id, progInput, progNote, autoComplete100);
+    setSheetError('');
+    try {
+      if (editingProgLog) {
+        const isLatest = progressLogs[0]?.id === editingProgLog.id;
+        await updateProgressLog(
+          editingProgLog.id,
+          {
+            progress: progInput,
+            note: progNote,
+            loggedAt: progLoggedAtInput ? fromLocalDateTimeInputValue(progLoggedAtInput) : undefined,
+          },
+          isLatest
+        );
+      } else {
+        await logTaskProgress(task.id, progInput, progNote, autoComplete100);
+      }
+      setShowProgressForm(false);
+      setEditingProgLog(null);
+    } catch (err) {
+      console.error('Failed to save progress log:', err);
+      setSheetError('保存进度记录失败，请检查网络连接后重试');
     }
-    setShowProgressForm(false);
-    setEditingProgLog(null);
   };
 
   const openNewActivityNode = () => {
@@ -194,24 +201,30 @@ export const TaskDetailSheet: React.FC<TaskDetailSheetProps> = ({
   const handleSaveActivityNode = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!nodeTitle.trim()) return;
-    if (editingNode) {
-      await updateActivityNode(editingNode.id, {
-        title: nodeTitle,
-        description: nodeDesc,
-        eventAt: useCustomEventTime && nodeEventAtInput
-          ? fromLocalDateTimeInputValue(nodeEventAtInput)
-          : editingNode.eventAt,
-      });
-    } else {
-      await addActivityNode(
-        task.id,
-        nodeTitle,
-        nodeDesc,
-        useCustomEventTime && nodeEventAtInput ? fromLocalDateTimeInputValue(nodeEventAtInput) : undefined
-      );
+    setSheetError('');
+    try {
+      if (editingNode) {
+        await updateActivityNode(editingNode.id, {
+          title: nodeTitle,
+          description: nodeDesc,
+          eventAt: useCustomEventTime && nodeEventAtInput
+            ? fromLocalDateTimeInputValue(nodeEventAtInput)
+            : editingNode.eventAt,
+        });
+      } else {
+        await addActivityNode(
+          task.id,
+          nodeTitle,
+          nodeDesc,
+          useCustomEventTime && nodeEventAtInput ? fromLocalDateTimeInputValue(nodeEventAtInput) : undefined
+        );
+      }
+      setShowActivityForm(false);
+      setEditingNode(null);
+    } catch (err) {
+      console.error('Failed to save activity node:', err);
+      setSheetError('保存活动节点失败，请检查网络连接后重试');
     }
-    setShowActivityForm(false);
-    setEditingNode(null);
   };
 
   const handleSliderOrQuickProgress = async (val: number) => {
@@ -233,11 +246,9 @@ export const TaskDetailSheet: React.FC<TaskDetailSheetProps> = ({
     <>
       <div
         className="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4"
-        onClick={onClose}
       >
         <div
           className="w-full sm:max-w-2xl h-[92dvh] sm:h-auto sm:max-h-[90dvh] flex flex-col bg-white dark:bg-slate-900 rounded-t-3xl sm:rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden"
-          onClick={(e) => e.stopPropagation()}
           role="dialog"
           aria-modal="true"
         >
@@ -381,6 +392,14 @@ export const TaskDetailSheet: React.FC<TaskDetailSheetProps> = ({
 
           {/* Scrollable Body */}
           <div className="flex-1 overflow-y-auto px-5 py-4 pb-safe space-y-5">
+            {sheetError && (
+              <div className="rounded-xl border border-rose-200 dark:border-rose-900/70 bg-rose-50 dark:bg-rose-950/40 px-3 py-2 text-xs text-rose-700 dark:text-rose-300 flex items-center justify-between gap-2">
+                <span>{sheetError}</span>
+                <button type="button" onClick={() => setSheetError('')} className="underline shrink-0">
+                  关闭
+                </button>
+              </div>
+            )}
             {activeTab === 'overview' && (
               <>
                 {completePromptValue && task.status !== 'completed' && (

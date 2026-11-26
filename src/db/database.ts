@@ -194,8 +194,8 @@ export async function seedSampleData(): Promise<void> {
     {
       id: pWorkId,
       name: '个人作品集网站改版',
-      description: '重构个人主页、案例研究排版与离线访问能力',
-      color: '#4F46E5',
+      description: '重构个人主页、案例研究排版与移动端访问体验',
+      color: '#3B82F6',
       status: 'active',
       progressMode: 'auto',
       manualProgress: 0,
@@ -205,8 +205,8 @@ export async function seedSampleData(): Promise<void> {
     {
       id: pStudyId,
       name: 'TypeScript 工程实践学习',
-      description: '深入类型体操、离线存储与 PWA 缓存策略',
-      color: '#0D9488',
+      description: '深入类型体操、IndexedDB 异步存储与跨端同步策略',
+      color: '#00C2A8',
       status: 'active',
       progressMode: 'auto',
       manualProgress: 0,
@@ -217,7 +217,7 @@ export async function seedSampleData(): Promise<void> {
       id: pLifeId,
       name: '年底生活整理与旅行准备',
       description: '跨年出行清单、证件检查与家居整理',
-      color: '#9333EA',
+      color: '#FF3B6B',
       status: 'active',
       progressMode: 'auto',
       manualProgress: 0,
@@ -272,7 +272,7 @@ export async function seedSampleData(): Promise<void> {
     },
     {
       id: t3Id,
-      title: 'IndexedDB 与云同步离线缓存练习',
+      title: 'IndexedDB 与云端实时同步练习',
       description: '完成事务写入、关联删除及跨设备实时同步校验。',
       projectId: pStudyId,
       plannedStartDate: addDaysToLocalDate(today, -2),
@@ -405,8 +405,8 @@ export async function seedSampleData(): Promise<void> {
     {
       id: createId('act'),
       taskId: t3Id,
-      title: '验证离线读写持久化',
-      description: '断开网络刷新页面后数据恢复正常',
+      title: '验证云端与跨端数据一致性',
+      description: '在电脑与手机浏览器同时打开页面校验实时更新',
       eventAt: iso(0, 8, 50),
       createdAt: iso(0, 8, 50),
       updatedAt: iso(0, 8, 50),
@@ -784,9 +784,9 @@ export async function deleteTask(taskId: string): Promise<void> {
     const base = `users/${uid}`;
     try {
       const [progSnap, actSnap, schSnap] = await Promise.all([
-        getDocs(query(collection(firestoreDb, `${base}/progressLogs`), where('taskId', '==', taskId))),
-        getDocs(query(collection(firestoreDb, `${base}/activityNodes`), where('taskId', '==', taskId))),
-        getDocs(query(collection(firestoreDb, `${base}/scheduleLogs`), where('taskId', '==', taskId))),
+        getDocs(query(collection(firestoreDb, `${base}/progressLogs`), where('ownerId', '==', uid), where('taskId', '==', taskId))),
+        getDocs(query(collection(firestoreDb, `${base}/activityNodes`), where('ownerId', '==', uid), where('taskId', '==', taskId))),
+        getDocs(query(collection(firestoreDb, `${base}/scheduleLogs`), where('ownerId', '==', uid), where('taskId', '==', taskId))),
       ]);
       const batch = writeBatch(firestoreDb);
       progSnap.forEach((d) => batch.delete(d.ref));

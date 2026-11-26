@@ -5,11 +5,15 @@ import {
   doc,
   getDoc,
   getDocs,
+  limit,
   onSnapshot,
+  query,
   serverTimestamp,
   setDoc,
   Timestamp,
   Unsubscribe,
+  updateDoc,
+  where,
   writeBatch,
 } from 'firebase/firestore';
 import { firestoreDb, handleFirestoreError, OperationType } from '../firebase';
@@ -155,15 +159,11 @@ export async function ensureUserProfileDoc(user: User): Promise<void> {
         updatedAt: serverTimestamp(),
       });
     } else {
-      await setDoc(
-        ref,
-        {
-          displayName: (user.displayName ?? '').slice(0, 120),
-          email: (user.email ?? '').slice(0, 200),
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true }
-      );
+      await updateDoc(ref, {
+        displayName: (user.displayName ?? '').slice(0, 120),
+        email: (user.email ?? '').slice(0, 200),
+        updatedAt: serverTimestamp(),
+      });
     }
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
@@ -173,8 +173,8 @@ export async function ensureUserProfileDoc(user: User): Promise<void> {
 export async function cloudCollectionHasData(uid: string): Promise<boolean> {
   try {
     const [tasksSnap, projectsSnap] = await Promise.all([
-      getDocs(collection(firestoreDb, `users/${uid}/tasks`)),
-      getDocs(collection(firestoreDb, `users/${uid}/projects`)),
+      getDocs(query(collection(firestoreDb, `users/${uid}/tasks`), where('ownerId', '==', uid), limit(1))),
+      getDocs(query(collection(firestoreDb, `users/${uid}/projects`), where('ownerId', '==', uid), limit(1))),
     ]);
     return !tasksSnap.empty || !projectsSnap.empty;
   } catch (err) {
@@ -194,6 +194,9 @@ export async function uploadLocalSnapshotToCloud(
   }
 ): Promise<void> {
   const base = `users/${uid}`;
+  const validProjectIds = new Set(bundle.projects.map((p) => p.id));
+  const validTaskIds = new Set(bundle.tasks.map((t) => t.id));
+
   // Collect writes in safe chunks (< 450 per WriteBatch)
   // Order: projects -> tasks -> child logs -> settings
   const ops: Array<{ ref: ReturnType<typeof doc>; data: Record<string, unknown> }> = [];
@@ -205,24 +208,31 @@ export async function uploadLocalSnapshotToCloud(
     });
   }
   for (const t of bundle.tasks) {
+    const safeTask: Task = {
+      ...t,
+      projectId: t.projectId && validProjectIds.has(t.projectId) ? t.projectId : null,
+    };
     ops.push({
-      ref: doc(firestoreDb, `${base}/tasks`, t.id),
-      data: toFirestoreTaskPayload(t, uid, true),
+      ref: doc(firestoreDb, `${base}/tasks`, safeTask.id),
+      data: toFirestoreTaskPayload(safeTask, uid, true),
     });
   }
   for (const l of bundle.progressLogs) {
+    if (!validTaskIds.has(l.taskId)) continue;
     ops.push({
       ref: doc(firestoreDb, `${base}/progressLogs`, l.id),
       data: toFirestoreProgressLogPayload(l, uid, true),
     });
   }
   for (const n of bundle.activityNodes) {
+    if (!validTaskIds.has(n.taskId)) continue;
     ops.push({
       ref: doc(firestoreDb, `${base}/activityNodes`, n.id),
       data: toFirestoreActivityNodePayload(n, uid, true),
     });
   }
   for (const s of bundle.scheduleLogs) {
+    if (!validTaskIds.has(s.taskId)) continue;
     ops.push({
       ref: doc(firestoreDb, `${base}/scheduleLogs`, s.id),
       data: toFirestoreScheduleLogPayload(s, uid),
@@ -253,7 +263,9 @@ export async function clearCloudUserData(uid: string): Promise<void> {
   try {
     const refsToDelete: ReturnType<typeof doc>[] = [];
     for (const colName of cols) {
-      const snap = await getDocs(collection(firestoreDb, `${base}/${colName}`));
+      const snap = await getDocs(
+        query(collection(firestoreDb, `${base}/${colName}`), where('ownerId', '==', uid))
+      );
       snap.forEach((d) => refsToDelete.push(d.ref));
     }
     const CHUNK = 400;
@@ -276,6 +288,7 @@ export interface CloudSyncCallbacks {
   onActivityNodes: (items: ActivityNode[]) => void;
   onScheduleLogs: (items: ScheduleLog[]) => void;
   onSettings: (item: AppSettings | null) => void;
+  onError?: (error: Error) => void;
 }
 
 export function subscribeUserCloudData(
@@ -285,9 +298,17 @@ export function subscribeUserCloudData(
   const base = `users/${uid}`;
   const unsubs: Unsubscribe[] = [];
 
+  const reportListenerError = (err: unknown, op: OperationType, path: string) => {
+    try {
+      handleFirestoreError(err, op, path);
+    } catch (wrapped) {
+      callbacks.onError?.(wrapped instanceof Error ? wrapped : new Error(String(wrapped)));
+    }
+  };
+
   unsubs.push(
     onSnapshot(
-      collection(firestoreDb, `${base}/projects`),
+      query(collection(firestoreDb, `${base}/projects`), where('ownerId', '==', uid)),
       (snap) => {
         const items: Project[] = snap.docs.map((d) => {
           const data = d.data();
@@ -295,7 +316,7 @@ export function subscribeUserCloudData(
             id: String(data.id ?? d.id),
             name: String(data.name ?? ''),
             description: String(data.description ?? ''),
-            color: String(data.color ?? '#4F46E5'),
+            color: String(data.color ?? '#0EA5E9'),
             status: data.status ?? 'active',
             progressMode: data.progressMode ?? 'auto',
             manualProgress: Number(data.manualProgress ?? 0),
@@ -305,13 +326,13 @@ export function subscribeUserCloudData(
         });
         callbacks.onProjects(items);
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, `${base}/projects`)
+      (err) => reportListenerError(err, OperationType.LIST, `${base}/projects`)
     )
   );
 
   unsubs.push(
     onSnapshot(
-      collection(firestoreDb, `${base}/tasks`),
+      query(collection(firestoreDb, `${base}/tasks`), where('ownerId', '==', uid)),
       (snap) => {
         const items: Task[] = snap.docs.map((d) => {
           const data = d.data();
@@ -336,13 +357,13 @@ export function subscribeUserCloudData(
         });
         callbacks.onTasks(items);
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, `${base}/tasks`)
+      (err) => reportListenerError(err, OperationType.LIST, `${base}/tasks`)
     )
   );
 
   unsubs.push(
     onSnapshot(
-      collection(firestoreDb, `${base}/progressLogs`),
+      query(collection(firestoreDb, `${base}/progressLogs`), where('ownerId', '==', uid)),
       (snap) => {
         const items: ProgressLog[] = snap.docs.map((d) => {
           const data = d.data();
@@ -358,13 +379,13 @@ export function subscribeUserCloudData(
         });
         callbacks.onProgressLogs(items);
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, `${base}/progressLogs`)
+      (err) => reportListenerError(err, OperationType.LIST, `${base}/progressLogs`)
     )
   );
 
   unsubs.push(
     onSnapshot(
-      collection(firestoreDb, `${base}/activityNodes`),
+      query(collection(firestoreDb, `${base}/activityNodes`), where('ownerId', '==', uid)),
       (snap) => {
         const items: ActivityNode[] = snap.docs.map((d) => {
           const data = d.data();
@@ -381,13 +402,13 @@ export function subscribeUserCloudData(
         });
         callbacks.onActivityNodes(items);
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, `${base}/activityNodes`)
+      (err) => reportListenerError(err, OperationType.LIST, `${base}/activityNodes`)
     )
   );
 
   unsubs.push(
     onSnapshot(
-      collection(firestoreDb, `${base}/scheduleLogs`),
+      query(collection(firestoreDb, `${base}/scheduleLogs`), where('ownerId', '==', uid)),
       (snap) => {
         const items: ScheduleLog[] = snap.docs.map((d) => {
           const data = d.data();
@@ -404,7 +425,7 @@ export function subscribeUserCloudData(
         });
         callbacks.onScheduleLogs(items);
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, `${base}/scheduleLogs`)
+      (err) => reportListenerError(err, OperationType.LIST, `${base}/scheduleLogs`)
     )
   );
 
@@ -427,7 +448,7 @@ export function subscribeUserCloudData(
           updatedAt: tsToIso(data.updatedAt),
         });
       },
-      (err) => handleFirestoreError(err, OperationType.GET, `${base}/settings/default`)
+      (err) => reportListenerError(err, OperationType.GET, `${base}/settings/default`)
     )
   );
 

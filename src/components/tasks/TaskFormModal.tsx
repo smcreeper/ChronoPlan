@@ -3,7 +3,7 @@ import { ChevronDown, ChevronUp, X, AlertCircle } from 'lucide-react';
 import { createTask, updateTask } from '../../db/database';
 import { Project, Task, TaskPriority, TaskStatus } from '../../types/models';
 import { PRIORITY_META, PRIORITY_OPTIONS, STATUS_META, STATUS_OPTIONS } from '../../utils/constants';
-import { diffLocalDays } from '../../utils/dateUtils';
+import { addDaysToLocalDate, diffLocalDays, toLocalDateString } from '../../utils/dateUtils';
 
 interface TaskFormModalProps {
   open: boolean;
@@ -59,11 +59,12 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
       setScheduleReason('');
       setShowAdvanced(true);
     } else {
+      const start = defaultStartDate || toLocalDateString();
       setTitle('');
       setDescription('');
       setProjectId(defaultProjectId ?? '');
-      setPlannedStartDate(defaultStartDate ?? '');
-      setPlannedEndDate(defaultEndDate ?? '');
+      setPlannedStartDate(start);
+      setPlannedEndDate(defaultEndDate || addDaysToLocalDate(start, 7));
       setPriority('P4');
       setStatus('not_started');
       setProgress(0);
@@ -162,6 +163,9 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
       }
       if (saved && onSaved) onSaved(saved);
       onClose();
+    } catch (err) {
+      console.error('Failed to save task:', err);
+      setError('保存失败，请检查网络连接后重试');
     } finally {
       setSaving(false);
     }
@@ -170,11 +174,9 @@ export const TaskFormModal: React.FC<TaskFormModalProps> = ({
   return (
     <div
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 backdrop-blur-xs p-0 sm:p-4"
-      onClick={onClose}
     >
       <div
         className="w-full sm:max-w-lg max-h-[92dvh] flex flex-col bg-white dark:bg-slate-900 rounded-t-3xl sm:rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
       >
