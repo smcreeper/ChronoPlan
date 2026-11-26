@@ -1,0 +1,302 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Global Hardened Helpers
+    // =========================================================================
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isNullableString(val, maxLen) {
+      return val == null || (val is string && val.size() <= maxLen);
+    }
+
+    function isValidDateStringOrNull(val) {
+      return val == null || (val is string && val.size() == 10 && val.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'));
+    }
+
+    function isValidIsoOrNull(val) {
+      return val == null || (val is string && val.size() >= 10 && val.size() <= 40);
+    }
+
+    function isValidProgress(val) {
+      return val is number && val >= 0 && val <= 100;
+    }
+
+    // =========================================================================
+    // Validation Blueprints
+    // =========================================================================
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isNullableString(data.get('displayName', null), 120)
+        && isNullableString(data.get('email', null), 200)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidProject(data, userId, projectId) {
+      return data.keys().hasAll(['id', 'ownerId', 'name', 'description', 'color', 'status', 'progressMode', 'manualProgress', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'ownerId', 'name', 'description', 'color', 'status', 'progressMode', 'manualProgress', 'createdAt', 'updatedAt'])
+        && data.id == projectId
+        && data.ownerId == userId
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.description is string && data.description.size() <= 1000
+        && data.color is string && data.color.size() >= 4 && data.color.size() <= 20
+        && data.status in ['active', 'completed', 'paused', 'archived']
+        && data.progressMode in ['auto', 'manual']
+        && isValidProgress(data.manualProgress)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTask(data, userId, taskId) {
+      return data.keys().hasAll(['id', 'ownerId', 'title', 'description', 'projectId', 'plannedStartDate', 'plannedEndDate', 'originalStartDate', 'originalEndDate', 'priority', 'status', 'progress', 'tags', 'notes', 'completedAt', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'ownerId', 'title', 'description', 'projectId', 'plannedStartDate', 'plannedEndDate', 'originalStartDate', 'originalEndDate', 'priority', 'status', 'progress', 'tags', 'notes', 'completedAt', 'createdAt', 'updatedAt'])
+        && data.id == taskId
+        && data.ownerId == userId
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && data.description is string && data.description.size() <= 4000
+        && (data.projectId == null || isValidId(data.projectId))
+        && isValidDateStringOrNull(data.plannedStartDate)
+        && isValidDateStringOrNull(data.plannedEndDate)
+        && isValidDateStringOrNull(data.originalStartDate)
+        && isValidDateStringOrNull(data.originalEndDate)
+        && data.priority in ['P1', 'P2', 'P3', 'P4']
+        && data.status in ['not_started', 'in_progress', 'paused', 'completed']
+        && isValidProgress(data.progress)
+        && data.tags is list && data.tags.size() <= 20
+        && (data.tags.size() == 0 || (data.tags[0] is string && data.tags[0].size() <= 40))
+        && data.notes is string && data.notes.size() <= 4000
+        && isValidIsoOrNull(data.completedAt)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidProgressLog(data, userId, logId) {
+      return data.keys().hasAll(['id', 'ownerId', 'taskId', 'progress', 'note', 'loggedAt', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'ownerId', 'taskId', 'progress', 'note', 'loggedAt', 'createdAt', 'updatedAt'])
+        && data.id == logId
+        && data.ownerId == userId
+        && isValidId(data.taskId)
+        && isValidProgress(data.progress)
+        && data.note is string && data.note.size() <= 1000
+        && data.loggedAt is string && data.loggedAt.size() >= 10 && data.loggedAt.size() <= 40
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidActivityNode(data, userId, nodeId) {
+      return data.keys().hasAll(['id', 'ownerId', 'taskId', 'title', 'description', 'eventAt', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'ownerId', 'taskId', 'title', 'description', 'eventAt', 'systemType', 'createdAt', 'updatedAt'])
+        && data.id == nodeId
+        && data.ownerId == userId
+        && isValidId(data.taskId)
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && data.description is string && data.description.size() <= 2000
+        && data.eventAt is string && data.eventAt.size() >= 10 && data.eventAt.size() <= 40
+        && (!('systemType' in data) || data.systemType == null || data.systemType in ['completed', 'reopened'])
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidScheduleLog(data, userId, logId) {
+      return data.keys().hasAll(['id', 'ownerId', 'taskId', 'oldStartDate', 'newStartDate', 'oldEndDate', 'newEndDate', 'changedAt', 'reason'])
+        && data.keys().hasOnly(['id', 'ownerId', 'taskId', 'oldStartDate', 'newStartDate', 'oldEndDate', 'newEndDate', 'changedAt', 'reason'])
+        && data.id == logId
+        && data.ownerId == userId
+        && isValidId(data.taskId)
+        && isValidDateStringOrNull(data.oldStartDate)
+        && isValidDateStringOrNull(data.newStartDate)
+        && isValidDateStringOrNull(data.oldEndDate)
+        && isValidDateStringOrNull(data.newEndDate)
+        && data.changedAt is string && data.changedAt.size() >= 10 && data.changedAt.size() <= 40
+        && data.reason is string && data.reason.size() <= 500;
+    }
+
+    function isValidSettings(data, userId, settingId) {
+      return data.keys().hasAll(['id', 'ownerId', 'theme', 'dateFormat', 'timeFormat', 'weekStartsOn', 'defaultTimelineScale', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'ownerId', 'theme', 'dateFormat', 'timeFormat', 'weekStartsOn', 'defaultTimelineScale', 'updatedAt'])
+        && data.id == settingId
+        && data.ownerId == userId
+        && data.theme in ['light', 'dark', 'system']
+        && data.dateFormat in ['zh', 'iso', 'slash']
+        && data.timeFormat in ['24h', '12h']
+        && data.weekStartsOn in [0, 1]
+        && data.defaultTimelineScale in ['day', 'week', 'month', 'quarter', 'year']
+        && data.updatedAt is timestamp;
+    }
+
+    // =========================================================================
+    // User-Scoped Collections
+    // =========================================================================
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow create: if isValidId(userId) && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId) && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'updatedAt']);
+      allow delete: if false;
+
+      match /projects/{projectId} {
+        allow get: if isValidId(projectId) && isOwner(userId) && existing().ownerId == userId;
+        allow list: if isOwner(userId) && resource.data.ownerId == userId;
+        allow create: if isValidId(projectId) && isOwner(userId)
+          && isValidProject(incoming(), userId, projectId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(projectId) && isOwner(userId)
+          && existing().ownerId == userId
+          && isValidProject(incoming(), userId, projectId)
+          && incoming().id == existing().id
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            (existing().status != 'completed' && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'color', 'status', 'progressMode', 'manualProgress', 'updatedAt'])) ||
+            (existing().status == 'completed' && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'name', 'description', 'color', 'progressMode', 'manualProgress', 'updatedAt']))
+          );
+        allow delete: if isValidId(projectId) && isOwner(userId) && existing().ownerId == userId;
+      }
+
+      match /tasks/{taskId} {
+        allow get: if isValidId(taskId) && isOwner(userId) && existing().ownerId == userId;
+        allow list: if isOwner(userId) && resource.data.ownerId == userId;
+        allow create: if isValidId(taskId) && isOwner(userId)
+          && isValidTask(incoming(), userId, taskId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && (incoming().projectId == null || existsAfter(/databases/$(database)/documents/users/$(userId)/projects/$(incoming().projectId)));
+        allow update: if isValidId(taskId) && isOwner(userId)
+          && existing().ownerId == userId
+          && isValidTask(incoming(), userId, taskId)
+          && incoming().id == existing().id
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (incoming().projectId == null || existsAfter(/databases/$(database)/documents/users/$(userId)/projects/$(incoming().projectId)))
+          && (
+            // Action 1: Edit/Progress/Schedule/Complete on non-completed task
+            (existing().status != 'completed' && incoming().diff(existing()).affectedKeys().hasOnly([
+              'title', 'description', 'projectId', 'plannedStartDate', 'plannedEndDate',
+              'originalStartDate', 'originalEndDate', 'priority', 'status', 'progress',
+              'tags', 'notes', 'completedAt', 'updatedAt'
+            ])) ||
+            // Action 2: Reopen a completed task (quick reopen or form edit)
+            (existing().status == 'completed' && incoming().status in ['not_started', 'in_progress', 'paused']
+              && incoming().diff(existing()).affectedKeys().hasOnly([
+                'title', 'description', 'projectId', 'plannedStartDate', 'plannedEndDate',
+                'priority', 'status', 'progress', 'tags', 'notes', 'completedAt', 'updatedAt'
+              ])) ||
+            // Action 3: Edit metadata/schedule of a completed task without altering completion state
+            (existing().status == 'completed' && incoming().status == 'completed'
+              && incoming().diff(existing()).affectedKeys().hasOnly([
+                'title', 'description', 'projectId', 'plannedStartDate', 'plannedEndDate',
+                'priority', 'tags', 'notes', 'updatedAt'
+              ]))
+          );
+        allow delete: if isValidId(taskId) && isOwner(userId) && existing().ownerId == userId;
+      }
+
+      match /progressLogs/{logId} {
+        allow get: if isValidId(logId) && isOwner(userId) && existing().ownerId == userId;
+        allow list: if isOwner(userId) && resource.data.ownerId == userId;
+        allow create: if isValidId(logId) && isOwner(userId)
+          && isValidProgressLog(incoming(), userId, logId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && existsAfter(/databases/$(database)/documents/users/$(userId)/tasks/$(incoming().taskId));
+        allow update: if isValidId(logId) && isOwner(userId)
+          && existing().ownerId == userId
+          && isValidProgressLog(incoming(), userId, logId)
+          && incoming().id == existing().id
+          && incoming().ownerId == existing().ownerId
+          && incoming().taskId == existing().taskId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['progress', 'note', 'loggedAt', 'updatedAt']);
+        allow delete: if isValidId(logId) && isOwner(userId) && existing().ownerId == userId;
+      }
+
+      match /activityNodes/{nodeId} {
+        allow get: if isValidId(nodeId) && isOwner(userId) && existing().ownerId == userId;
+        allow list: if isOwner(userId) && resource.data.ownerId == userId;
+        allow create: if isValidId(nodeId) && isOwner(userId)
+          && isValidActivityNode(incoming(), userId, nodeId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && existsAfter(/databases/$(database)/documents/users/$(userId)/tasks/$(incoming().taskId));
+        allow update: if isValidId(nodeId) && isOwner(userId)
+          && existing().ownerId == userId
+          && isValidActivityNode(incoming(), userId, nodeId)
+          && incoming().id == existing().id
+          && incoming().ownerId == existing().ownerId
+          && incoming().taskId == existing().taskId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'eventAt', 'updatedAt']);
+        allow delete: if isValidId(nodeId) && isOwner(userId) && existing().ownerId == userId;
+      }
+
+      match /scheduleLogs/{logId} {
+        allow get: if isValidId(logId) && isOwner(userId) && existing().ownerId == userId;
+        allow list: if isOwner(userId) && resource.data.ownerId == userId;
+        allow create: if isValidId(logId) && isOwner(userId)
+          && isValidScheduleLog(incoming(), userId, logId)
+          && existsAfter(/databases/$(database)/documents/users/$(userId)/tasks/$(incoming().taskId));
+        allow update: if false;
+        allow delete: if isValidId(logId) && isOwner(userId) && existing().ownerId == userId;
+      }
+
+      match /settings/{settingId} {
+        allow get: if isValidId(settingId) && isOwner(userId) && existing().ownerId == userId;
+        allow list: if isOwner(userId) && resource.data.ownerId == userId;
+        allow create: if isValidId(settingId) && isOwner(userId)
+          && isValidSettings(incoming(), userId, settingId)
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(settingId) && isOwner(userId)
+          && existing().ownerId == userId
+          && isValidSettings(incoming(), userId, settingId)
+          && incoming().id == existing().id
+          && incoming().ownerId == existing().ownerId
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['theme', 'dateFormat', 'timeFormat', 'weekStartsOn', 'defaultTimelineScale', 'updatedAt']);
+        allow delete: if isValidId(settingId) && isOwner(userId) && existing().ownerId == userId;
+      }
+    }
+  }
+}

@@ -1,10 +1,13 @@
 import React, { useMemo, useState } from 'react';
+import { User } from 'firebase/auth';
 import {
   AlertCircle,
   CalendarClock,
   Check,
   Clock,
+  Cloud,
   FolderKanban,
+  LogIn,
   Plus,
   TrendingUp,
   Activity,
@@ -35,6 +38,8 @@ interface DashboardViewProps {
   progressLogs: ProgressLog[];
   activityNodes: ActivityNode[];
   settings: AppSettings;
+  cloudUser: User | null;
+  onSignIn: () => Promise<void>;
   onSelectTask: (taskId: string) => void;
   onOpenNewTaskModal: () => void;
   onNavigateTasks: (preset: 'overdue' | 'today' | 'all') => void;
@@ -47,6 +52,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   progressLogs,
   activityNodes,
   settings,
+  cloudUser,
+  onSignIn,
   onSelectTask,
   onOpenNewTaskModal,
   onNavigateTasks,
@@ -182,6 +189,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {!cloudUser && (
+        <div className="rounded-2xl bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200/80 dark:border-blue-900/60 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-2.5 text-xs text-blue-900 dark:text-blue-200">
+            <Cloud className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5 sm:mt-0" />
+            <span>
+              当前为本地浏览器存储；登录 Google 账号后，每次打开网页端都将自动同步完全一致的任务与进度。
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onSignIn}
+            className="inline-flex items-center justify-center gap-1.5 min-h-[36px] px-3.5 py-1.5 rounded-xl bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 shrink-0 whitespace-nowrap self-start sm:self-auto"
+          >
+            <LogIn className="w-3.5 h-3.5" />
+            <span>登录开启云同步</span>
+          </button>
+        </div>
+      )}
+
       {/* Header & Quick Add */}
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
         <div>

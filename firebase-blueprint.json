@@ -1,0 +1,156 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private root user profile document for syncing personal planner metadata.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "displayName": { "type": "string", "maxLength": 120 },
+        "email": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "createdAt", "updatedAt"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "A personal project container grouping tasks.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "color": { "type": "string", "minLength": 4, "maxLength": 20 },
+        "status": { "type": "string", "enum": ["active", "completed", "paused", "archived"] },
+        "progressMode": { "type": "string", "enum": ["auto", "manual"] },
+        "manualProgress": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "name", "color", "status", "progressMode", "manualProgress", "createdAt", "updatedAt"]
+    },
+    "Task": {
+      "title": "Task",
+      "description": "A personal task with planned schedule, priority, status, progress, and notes.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 4000 },
+        "projectId": { "type": "string", "maxLength": 128 },
+        "plannedStartDate": { "type": "string", "maxLength": 10 },
+        "plannedEndDate": { "type": "string", "maxLength": 10 },
+        "originalStartDate": { "type": "string", "maxLength": 10 },
+        "originalEndDate": { "type": "string", "maxLength": 10 },
+        "priority": { "type": "string", "enum": ["P1", "P2", "P3", "P4"] },
+        "status": { "type": "string", "enum": ["not_started", "in_progress", "paused", "completed"] },
+        "progress": { "type": "number" },
+        "tags": { "type": "array" },
+        "notes": { "type": "string", "maxLength": 4000 },
+        "completedAt": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "title", "priority", "status", "progress", "tags", "createdAt", "updatedAt"]
+    },
+    "ProgressLog": {
+      "title": "ProgressLog",
+      "description": "A timestamped progress update record belonging to a task.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "taskId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "progress": { "type": "number" },
+        "note": { "type": "string", "maxLength": 1000 },
+        "loggedAt": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "taskId", "progress", "note", "loggedAt", "createdAt", "updatedAt"]
+    },
+    "ActivityNode": {
+      "title": "ActivityNode",
+      "description": "An actual execution event milestone belonging to a task.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "taskId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "eventAt": { "type": "string", "maxLength": 40 },
+        "systemType": { "type": "string", "enum": ["completed", "reopened"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "taskId", "title", "description", "eventAt", "createdAt", "updatedAt"]
+    },
+    "ScheduleLog": {
+      "title": "ScheduleLog",
+      "description": "A planned start or deadline modification audit log belonging to a task.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "taskId": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "oldStartDate": { "type": "string", "maxLength": 10 },
+        "newStartDate": { "type": "string", "maxLength": 10 },
+        "oldEndDate": { "type": "string", "maxLength": 10 },
+        "newEndDate": { "type": "string", "maxLength": 10 },
+        "changedAt": { "type": "string", "maxLength": 40 },
+        "reason": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["id", "ownerId", "taskId", "changedAt", "reason"]
+    },
+    "UserSettings": {
+      "title": "UserSettings",
+      "description": "Synced user preferences for theme, date/time display, and timeline scale.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "ownerId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "theme": { "type": "string", "enum": ["light", "dark", "system"] },
+        "dateFormat": { "type": "string", "enum": ["zh", "iso", "slash"] },
+        "timeFormat": { "type": "string", "enum": ["24h", "12h"] },
+        "weekStartsOn": { "type": "number" },
+        "defaultTimelineScale": { "type": "string", "enum": ["day", "week", "month", "quarter", "year"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "ownerId", "theme", "dateFormat", "timeFormat", "weekStartsOn", "defaultTimelineScale", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profile metadata."
+    },
+    "/users/{userId}/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/Project" },
+      "description": "User's synced projects."
+    },
+    "/users/{userId}/tasks/{taskId}": {
+      "schema": { "$ref": "#/entities/Task" },
+      "description": "User's synced tasks."
+    },
+    "/users/{userId}/progressLogs/{logId}": {
+      "schema": { "$ref": "#/entities/ProgressLog" },
+      "description": "User's synced task progress history records."
+    },
+    "/users/{userId}/activityNodes/{nodeId}": {
+      "schema": { "$ref": "#/entities/ActivityNode" },
+      "description": "User's synced task activity milestone nodes."
+    },
+    "/users/{userId}/scheduleLogs/{logId}": {
+      "schema": { "$ref": "#/entities/ScheduleLog" },
+      "description": "User's synced task schedule/DDL adjustment history."
+    },
+    "/users/{userId}/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/UserSettings" },
+      "description": "User's synced application preferences."
+    }
+  }
+}

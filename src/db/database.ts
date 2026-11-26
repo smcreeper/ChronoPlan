@@ -1,5 +1,17 @@
 import Dexie, { Table } from 'dexie';
 import {
+  collection,
+  doc,
+  getDocs,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
+  writeBatch,
+} from 'firebase/firestore';
+import { firestoreDb, handleFirestoreError, OperationType } from '../firebase';
+import {
   ActivityNode,
   AppMeta,
   AppSettings,
@@ -14,6 +26,17 @@ import {
 } from '../types/models';
 import { EXPORT_SCHEMA_VERSION } from '../utils/constants';
 import { addDaysToLocalDate, toLocalDateString } from '../utils/dateUtils';
+import {
+  clearCloudUserData,
+  deleteCloudDoc,
+  toFirestoreActivityNodePayload,
+  toFirestoreProgressLogPayload,
+  toFirestoreProjectPayload,
+  toFirestoreScheduleLogPayload,
+  toFirestoreSettingsPayload,
+  toFirestoreTaskPayload,
+  uploadLocalSnapshotToCloud,
+} from './cloudSync';
 
 export class ChronoPlanDB extends Dexie {
   tasks!: Table<Task, string>;
@@ -50,11 +73,82 @@ export const DEFAULT_SETTINGS: AppSettings = {
   updatedAt: new Date().toISOString(),
 };
 
+let activeCloudUid: string | null = null;
+
+export function setActiveCloudUid(uid: string | null): void {
+  activeCloudUid = uid;
+}
+
+export function getActiveCloudUid(): string | null {
+  return activeCloudUid;
+}
+
 export function createId(prefix: string): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return `${prefix}_${crypto.randomUUID()}`;
   }
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+// Cloud-to-local snapshot sync helpers
+export async function replaceLocalProjects(items: Project[]): Promise<void> {
+  await db.transaction('rw', db.projects, async () => {
+    await db.projects.clear();
+    if (items.length) await db.projects.bulkPut(items);
+  });
+}
+
+export async function replaceLocalTasks(items: Task[]): Promise<void> {
+  await db.transaction('rw', db.tasks, async () => {
+    await db.tasks.clear();
+    if (items.length) await db.tasks.bulkPut(items);
+  });
+}
+
+export async function replaceLocalProgressLogs(items: ProgressLog[]): Promise<void> {
+  await db.transaction('rw', db.progressLogs, async () => {
+    await db.progressLogs.clear();
+    if (items.length) await db.progressLogs.bulkPut(items);
+  });
+}
+
+export async function replaceLocalActivityNodes(items: ActivityNode[]): Promise<void> {
+  await db.transaction('rw', db.activityNodes, async () => {
+    await db.activityNodes.clear();
+    if (items.length) await db.activityNodes.bulkPut(items);
+  });
+}
+
+export async function replaceLocalScheduleLogs(items: ScheduleLog[]): Promise<void> {
+  await db.transaction('rw', db.scheduleLogs, async () => {
+    await db.scheduleLogs.clear();
+    if (items.length) await db.scheduleLogs.bulkPut(items);
+  });
+}
+
+export async function replaceLocalSettings(item: AppSettings | null): Promise<void> {
+  if (item) {
+    await db.settings.put(item);
+  }
+}
+
+export async function getLocalSnapshotBundle() {
+  const [projects, tasks, progressLogs, activityNodes, scheduleLogs, settings] = await Promise.all([
+    db.projects.toArray(),
+    db.tasks.toArray(),
+    db.progressLogs.toArray(),
+    db.activityNodes.toArray(),
+    db.scheduleLogs.toArray(),
+    db.settings.get('default'),
+  ]);
+  return {
+    projects,
+    tasks,
+    progressLogs,
+    activityNodes,
+    scheduleLogs,
+    settings: settings ?? DEFAULT_SETTINGS,
+  };
 }
 
 // Ensure settings and initial seed (only once on virgin DB)
@@ -178,8 +272,8 @@ export async function seedSampleData(): Promise<void> {
     },
     {
       id: t3Id,
-      title: 'IndexedDB 与 Dexie 离线同步练习',
-      description: '完成事务写入、关联删除及 JSON 备份导入导出校验。',
+      title: 'IndexedDB 与云同步离线缓存练习',
+      description: '完成事务写入、关联删除及跨设备实时同步校验。',
       projectId: pStudyId,
       plannedStartDate: addDaysToLocalDate(today, -2),
       plannedEndDate: today,
@@ -353,6 +447,18 @@ export async function seedSampleData(): Promise<void> {
       await db.scheduleLogs.bulkPut(scheduleLogs);
     }
   );
+
+  if (activeCloudUid) {
+    const currentSettings = (await db.settings.get('default')) ?? DEFAULT_SETTINGS;
+    await uploadLocalSnapshotToCloud(activeCloudUid, {
+      projects,
+      tasks,
+      progressLogs,
+      activityNodes,
+      scheduleLogs,
+      settings: currentSettings,
+    });
+  }
 }
 
 // ============================================================================
@@ -390,8 +496,8 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
 
   const task: Task = {
     id: createId('task'),
-    title: input.title.trim(),
-    description: (input.description ?? '').trim(),
+    title: input.title.trim().slice(0, 200),
+    description: (input.description ?? '').trim().slice(0, 4000),
     projectId: input.projectId || null,
     plannedStartDate: start,
     plannedEndDate: end,
@@ -400,28 +506,54 @@ export async function createTask(input: CreateTaskInput): Promise<Task> {
     priority: input.priority ?? 'P4',
     status,
     progress,
-    tags: (input.tags ?? []).map((t) => t.trim()).filter(Boolean),
-    notes: (input.notes ?? '').trim(),
+    tags: (input.tags ?? []).map((t) => t.trim().slice(0, 40)).filter(Boolean).slice(0, 20),
+    notes: (input.notes ?? '').trim().slice(0, 4000),
     createdAt: now,
     updatedAt: now,
     completedAt,
   };
 
+  const completionNode: ActivityNode | null =
+    status === 'completed'
+      ? {
+          id: createId('act'),
+          taskId: task.id,
+          title: '任务完成',
+          description: '创建时直接标记为已完成',
+          eventAt: now,
+          createdAt: now,
+          updatedAt: now,
+          systemType: 'completed',
+        }
+      : null;
+
   await db.transaction('rw', [db.tasks, db.activityNodes], async () => {
     await db.tasks.add(task);
-    if (status === 'completed') {
-      await db.activityNodes.add({
-        id: createId('act'),
-        taskId: task.id,
-        title: '任务完成',
-        description: '创建时直接标记为已完成',
-        eventAt: now,
-        createdAt: now,
-        updatedAt: now,
-        systemType: 'completed',
-      });
+    if (completionNode) {
+      await db.activityNodes.add(completionNode);
     }
   });
+
+  if (activeCloudUid) {
+    const uid = activeCloudUid;
+    const base = `users/${uid}`;
+    try {
+      const batch = writeBatch(firestoreDb);
+      batch.set(
+        doc(firestoreDb, `${base}/tasks`, task.id),
+        toFirestoreTaskPayload(task, uid, true)
+      );
+      if (completionNode) {
+        batch.set(
+          doc(firestoreDb, `${base}/activityNodes`, completionNode.id),
+          toFirestoreActivityNodePayload(completionNode, uid, true)
+        );
+      }
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `${base}/tasks/${task.id}`);
+    }
+  }
 
   return task;
 }
@@ -445,7 +577,6 @@ export async function updateTask(
   const nextEnd =
     patch.plannedEndDate !== undefined ? patch.plannedEndDate || null : existing.plannedEndDate;
 
-  // Preserve original dates if they were previously null and now set for the first time
   const originalStartDate = existing.originalStartDate ?? nextStart;
   const originalEndDate = existing.originalEndDate ?? nextEnd;
 
@@ -456,13 +587,11 @@ export async function updateTask(
       : existing.progress;
   let nextCompletedAt = patch.completedAt !== undefined ? patch.completedAt : existing.completedAt;
 
-  // Status & Progress linkage rules
   if (patch.status !== undefined && patch.status !== existing.status) {
     if (patch.status === 'completed') {
       nextProgress = 100;
       nextCompletedAt = nextCompletedAt ?? now;
     } else if (existing.status === 'completed') {
-      // Reopened from completed
       if (patch.progress === undefined && nextProgress === 100) {
         nextProgress = patch.status === 'not_started' ? 0 : 90;
       }
@@ -482,10 +611,13 @@ export async function updateTask(
   const updated: Task = {
     ...existing,
     ...patch,
-    title: patch.title !== undefined ? patch.title.trim() : existing.title,
-    description: patch.description !== undefined ? patch.description.trim() : existing.description,
-    notes: patch.notes !== undefined ? patch.notes.trim() : existing.notes,
-    tags: patch.tags !== undefined ? patch.tags.map((t) => t.trim()).filter(Boolean) : existing.tags,
+    title: patch.title !== undefined ? patch.title.trim().slice(0, 200) : existing.title,
+    description: patch.description !== undefined ? patch.description.trim().slice(0, 4000) : existing.description,
+    notes: patch.notes !== undefined ? patch.notes.trim().slice(0, 4000) : existing.notes,
+    tags:
+      patch.tags !== undefined
+        ? patch.tags.map((t) => t.trim().slice(0, 40)).filter(Boolean).slice(0, 20)
+        : existing.tags,
     projectId: patch.projectId !== undefined ? patch.projectId || null : existing.projectId,
     plannedStartDate: nextStart,
     plannedEndDate: nextEnd,
@@ -497,29 +629,35 @@ export async function updateTask(
     updatedAt: now,
   };
 
+  let newScheduleLog: ScheduleLog | null = null;
+  if (datesChanged && hadPreviousDates) {
+    newScheduleLog = {
+      id: createId('sch'),
+      taskId,
+      oldStartDate: existing.plannedStartDate,
+      newStartDate: nextStart,
+      oldEndDate: existing.plannedEndDate,
+      newEndDate: nextEnd,
+      changedAt: now,
+      reason: (options.scheduleReason ?? '').trim().slice(0, 500),
+    };
+  }
+
+  let newActivityNode: ActivityNode | null = null;
+
   await db.transaction('rw', [db.tasks, db.scheduleLogs, db.activityNodes], async () => {
     await db.tasks.put(updated);
 
-    if (datesChanged && hadPreviousDates) {
-      await db.scheduleLogs.add({
-        id: createId('sch'),
-        taskId,
-        oldStartDate: existing.plannedStartDate,
-        newStartDate: nextStart,
-        oldEndDate: existing.plannedEndDate,
-        newEndDate: nextEnd,
-        changedAt: now,
-        reason: (options.scheduleReason ?? '').trim(),
-      });
+    if (newScheduleLog) {
+      await db.scheduleLogs.add(newScheduleLog);
     }
 
-    // Completion / reopen activity nodes (avoid duplicate completion events for same cycle)
     if (existing.status !== 'completed' && nextStatus === 'completed' && options.createCompletionActivity !== false) {
       const existingNodes = await db.activityNodes.where('taskId').equals(taskId).toArray();
       const sorted = existingNodes.sort((a, b) => b.eventAt.localeCompare(a.eventAt));
       const latestSystem = sorted.find((n) => n.systemType);
       if (!latestSystem || latestSystem.systemType !== 'completed') {
-        await db.activityNodes.add({
+        const node: ActivityNode = {
           id: createId('act'),
           taskId,
           title: '任务完成',
@@ -528,10 +666,12 @@ export async function updateTask(
           createdAt: now,
           updatedAt: now,
           systemType: 'completed',
-        });
+        };
+        newActivityNode = node;
+        await db.activityNodes.add(node);
       }
     } else if (existing.status === 'completed' && nextStatus !== 'completed') {
-      await db.activityNodes.add({
+      const node: ActivityNode = {
         id: createId('act'),
         taskId,
         title: '重新打开任务',
@@ -540,9 +680,68 @@ export async function updateTask(
         createdAt: now,
         updatedAt: now,
         systemType: 'reopened',
-      });
+      };
+      newActivityNode = node;
+      await db.activityNodes.add(node);
     }
   });
+
+  const createdActivityNode = newActivityNode as ActivityNode | null;
+
+  if (activeCloudUid) {
+    const uid = activeCloudUid;
+    const base = `users/${uid}`;
+    try {
+      const batch = writeBatch(firestoreDb);
+      const taskRef = doc(firestoreDb, `${base}/tasks`, taskId);
+
+      // Build exact update fields aligned with Firestore security rule Actions 1, 2, 3
+      const updateFields: Record<string, unknown> = {
+        title: updated.title,
+        description: updated.description,
+        projectId: updated.projectId,
+        plannedStartDate: updated.plannedStartDate,
+        plannedEndDate: updated.plannedEndDate,
+        priority: updated.priority,
+        tags: updated.tags,
+        notes: updated.notes,
+        updatedAt: serverTimestamp(),
+      };
+
+      if (existing.status !== 'completed') {
+        // Action 1
+        updateFields.originalStartDate = updated.originalStartDate;
+        updateFields.originalEndDate = updated.originalEndDate;
+        updateFields.status = updated.status;
+        updateFields.progress = updated.progress;
+        updateFields.completedAt = updated.completedAt;
+      } else if (nextStatus !== 'completed') {
+        // Action 2: Reopen completed task
+        updateFields.status = updated.status;
+        updateFields.progress = updated.progress;
+        updateFields.completedAt = updated.completedAt;
+      }
+      // Action 3 (completed -> completed metadata edit) keeps status/progress/completedAt untouched
+
+      batch.update(taskRef, updateFields);
+
+      if (newScheduleLog) {
+        batch.set(
+          doc(firestoreDb, `${base}/scheduleLogs`, newScheduleLog.id),
+          toFirestoreScheduleLogPayload(newScheduleLog, uid)
+        );
+      }
+      if (createdActivityNode) {
+        batch.set(
+          doc(firestoreDb, `${base}/activityNodes`, createdActivityNode.id),
+          toFirestoreActivityNodePayload(createdActivityNode, uid, true)
+        );
+      }
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `${base}/tasks/${taskId}`);
+    }
+  }
 
   return updated;
 }
@@ -579,6 +778,26 @@ export async function deleteTask(taskId: string): Promise<void> {
       await db.scheduleLogs.where('taskId').equals(taskId).delete();
     }
   );
+
+  if (activeCloudUid) {
+    const uid = activeCloudUid;
+    const base = `users/${uid}`;
+    try {
+      const [progSnap, actSnap, schSnap] = await Promise.all([
+        getDocs(query(collection(firestoreDb, `${base}/progressLogs`), where('taskId', '==', taskId))),
+        getDocs(query(collection(firestoreDb, `${base}/activityNodes`), where('taskId', '==', taskId))),
+        getDocs(query(collection(firestoreDb, `${base}/scheduleLogs`), where('taskId', '==', taskId))),
+      ]);
+      const batch = writeBatch(firestoreDb);
+      progSnap.forEach((d) => batch.delete(d.ref));
+      actSnap.forEach((d) => batch.delete(d.ref));
+      schSnap.forEach((d) => batch.delete(d.ref));
+      batch.delete(doc(firestoreDb, `${base}/tasks`, taskId));
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `${base}/tasks/${taskId}`);
+    }
+  }
 }
 
 // ============================================================================
@@ -596,42 +815,76 @@ export async function logTaskProgress(
 
   const now = new Date().toISOString();
   const clamped = Math.max(0, Math.min(100, Math.round(progress)));
+  const newLog: ProgressLog = {
+    id: createId('prog'),
+    taskId,
+    progress: clamped,
+    note: note.trim().slice(0, 1000),
+    loggedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  };
 
-  await db.transaction('rw', [db.tasks, db.progressLogs, db.activityNodes], async () => {
-    await db.progressLogs.add({
-      id: createId('prog'),
+  let completionNode: ActivityNode | null = null;
+  const patch: Partial<Task> = {
+    progress: clamped,
+    updatedAt: now,
+  };
+
+  if (clamped === 100 && autoCompleteIf100 && task.status !== 'completed') {
+    patch.status = 'completed';
+    patch.completedAt = now;
+    completionNode = {
+      id: createId('act'),
       taskId,
-      progress: clamped,
-      note: note.trim(),
-      loggedAt: now,
+      title: '任务完成',
+      description: note.trim() ? `进度达到 100%：${note.trim()}` : '进度达到 100%，任务自动完成',
+      eventAt: now,
       createdAt: now,
       updatedAt: now,
-    });
-
-    const patch: Partial<Task> = {
-      progress: clamped,
-      updatedAt: now,
+      systemType: 'completed',
     };
+  } else if (clamped > 0 && clamped < 100 && task.status === 'not_started') {
+    patch.status = 'in_progress';
+  }
 
-    if (clamped === 100 && autoCompleteIf100 && task.status !== 'completed') {
-      patch.status = 'completed';
-      patch.completedAt = now;
-      await db.activityNodes.add({
-        id: createId('act'),
-        taskId,
-        title: '任务完成',
-        description: note.trim() ? `进度达到 100%：${note.trim()}` : '进度达到 100%，任务自动完成',
-        eventAt: now,
-        createdAt: now,
-        updatedAt: now,
-        systemType: 'completed',
-      });
-    } else if (clamped > 0 && clamped < 100 && task.status === 'not_started') {
-      patch.status = 'in_progress';
+  await db.transaction('rw', [db.tasks, db.progressLogs, db.activityNodes], async () => {
+    await db.progressLogs.add(newLog);
+    if (completionNode) {
+      await db.activityNodes.add(completionNode);
     }
-
     await db.tasks.update(taskId, patch);
   });
+
+  if (activeCloudUid) {
+    const uid = activeCloudUid;
+    const base = `users/${uid}`;
+    try {
+      const batch = writeBatch(firestoreDb);
+      batch.set(
+        doc(firestoreDb, `${base}/progressLogs`, newLog.id),
+        toFirestoreProgressLogPayload(newLog, uid, true)
+      );
+      if (task.status !== 'completed') {
+        const taskUpdate: Record<string, unknown> = {
+          progress: clamped,
+          updatedAt: serverTimestamp(),
+        };
+        if (patch.status) taskUpdate.status = patch.status;
+        if (patch.completedAt) taskUpdate.completedAt = patch.completedAt;
+        batch.update(doc(firestoreDb, `${base}/tasks`, taskId), taskUpdate);
+      }
+      if (completionNode) {
+        batch.set(
+          doc(firestoreDb, `${base}/activityNodes`, completionNode.id),
+          toFirestoreActivityNodePayload(completionNode, uid, true)
+        );
+      }
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `${base}/progressLogs/${newLog.id}`);
+    }
+  }
 }
 
 export async function updateProgressLog(
@@ -647,12 +900,14 @@ export async function updateProgressLog(
     patch.progress !== undefined
       ? Math.max(0, Math.min(100, Math.round(patch.progress)))
       : existing.progress;
+  const nextNote = patch.note !== undefined ? patch.note.trim().slice(0, 1000) : existing.note;
+  const nextLoggedAt = (patch.loggedAt ?? existing.loggedAt).slice(0, 40);
 
   await db.transaction('rw', [db.progressLogs, db.tasks], async () => {
     await db.progressLogs.update(logId, {
       progress: nextProgress,
-      note: patch.note !== undefined ? patch.note.trim() : existing.note,
-      loggedAt: patch.loggedAt ?? existing.loggedAt,
+      note: nextNote,
+      loggedAt: nextLoggedAt,
       updatedAt: now,
     });
     if (syncCurrentProgress) {
@@ -662,20 +917,72 @@ export async function updateProgressLog(
       });
     }
   });
+
+  if (activeCloudUid) {
+    const uid = activeCloudUid;
+    const base = `users/${uid}`;
+    try {
+      const batch = writeBatch(firestoreDb);
+      batch.update(doc(firestoreDb, `${base}/progressLogs`, logId), {
+        progress: nextProgress,
+        note: nextNote,
+        loggedAt: nextLoggedAt,
+        updatedAt: serverTimestamp(),
+      });
+      if (syncCurrentProgress) {
+        const parentTask = await db.tasks.get(existing.taskId);
+        if (parentTask && parentTask.status !== 'completed') {
+          batch.update(doc(firestoreDb, `${base}/tasks`, existing.taskId), {
+            progress: nextProgress,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `${base}/progressLogs/${logId}`);
+    }
+  }
 }
 
 export async function deleteProgressLog(logId: string, fallbackCurrentProgress?: number): Promise<void> {
   const existing = await db.progressLogs.get(logId);
   if (!existing) return;
+  const clampedFallback =
+    fallbackCurrentProgress !== undefined
+      ? Math.max(0, Math.min(100, Math.round(fallbackCurrentProgress)))
+      : undefined;
+
   await db.transaction('rw', [db.progressLogs, db.tasks], async () => {
     await db.progressLogs.delete(logId);
-    if (fallbackCurrentProgress !== undefined) {
+    if (clampedFallback !== undefined) {
       await db.tasks.update(existing.taskId, {
-        progress: Math.max(0, Math.min(100, Math.round(fallbackCurrentProgress))),
+        progress: clampedFallback,
         updatedAt: new Date().toISOString(),
       });
     }
   });
+
+  if (activeCloudUid) {
+    const uid = activeCloudUid;
+    const base = `users/${uid}`;
+    try {
+      const batch = writeBatch(firestoreDb);
+      batch.delete(doc(firestoreDb, `${base}/progressLogs`, logId));
+      if (clampedFallback !== undefined) {
+        const parentTask = await db.tasks.get(existing.taskId);
+        if (parentTask && parentTask.status !== 'completed') {
+          batch.update(doc(firestoreDb, `${base}/tasks`, existing.taskId), {
+            progress: clampedFallback,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `${base}/progressLogs/${logId}`);
+    }
+  }
 }
 
 // ============================================================================
@@ -692,9 +999,9 @@ export async function addActivityNode(
   const node: ActivityNode = {
     id: createId('act'),
     taskId,
-    title: title.trim(),
-    description: description.trim(),
-    eventAt: customEventAt || now,
+    title: title.trim().slice(0, 200),
+    description: description.trim().slice(0, 2000),
+    eventAt: (customEventAt || now).slice(0, 40),
     createdAt: now,
     updatedAt: now,
   };
@@ -703,6 +1010,24 @@ export async function addActivityNode(
     await db.activityNodes.add(node);
     await db.tasks.update(taskId, { updatedAt: now });
   });
+
+  if (activeCloudUid) {
+    const uid = activeCloudUid;
+    const base = `users/${uid}`;
+    try {
+      const batch = writeBatch(firestoreDb);
+      batch.set(
+        doc(firestoreDb, `${base}/activityNodes`, node.id),
+        toFirestoreActivityNodePayload(node, uid, true)
+      );
+      batch.update(doc(firestoreDb, `${base}/tasks`, taskId), {
+        updatedAt: serverTimestamp(),
+      });
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `${base}/activityNodes/${node.id}`);
+    }
+  }
 
   return node;
 }
@@ -714,17 +1039,38 @@ export async function updateActivityNode(
   const existing = await db.activityNodes.get(nodeId);
   if (!existing) return;
   const now = new Date().toISOString();
+  const nextTitle = patch.title !== undefined ? patch.title.trim().slice(0, 200) : existing.title;
+  const nextDescription =
+    patch.description !== undefined ? patch.description.trim().slice(0, 2000) : existing.description;
+  const nextEventAt = (patch.eventAt !== undefined ? patch.eventAt : existing.eventAt).slice(0, 40);
+
   await db.activityNodes.update(nodeId, {
-    title: patch.title !== undefined ? patch.title.trim() : existing.title,
-    description: patch.description !== undefined ? patch.description.trim() : existing.description,
-    // Never overwrite eventAt automatically unless user explicitly passes patch.eventAt
-    eventAt: patch.eventAt !== undefined ? patch.eventAt : existing.eventAt,
+    title: nextTitle,
+    description: nextDescription,
+    eventAt: nextEventAt,
     updatedAt: now,
   });
+
+  if (activeCloudUid) {
+    const base = `users/${activeCloudUid}`;
+    try {
+      await updateDoc(doc(firestoreDb, `${base}/activityNodes`, nodeId), {
+        title: nextTitle,
+        description: nextDescription,
+        eventAt: nextEventAt,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `${base}/activityNodes/${nodeId}`);
+    }
+  }
 }
 
 export async function deleteActivityNode(nodeId: string): Promise<void> {
   await db.activityNodes.delete(nodeId);
+  if (activeCloudUid) {
+    await deleteCloudDoc(`users/${activeCloudUid}/activityNodes`, nodeId);
+  }
 }
 
 // ============================================================================
@@ -744,16 +1090,29 @@ export async function createProject(input: CreateProjectInput): Promise<Project>
   const now = new Date().toISOString();
   const project: Project = {
     id: createId('proj'),
-    name: input.name.trim(),
-    description: (input.description ?? '').trim(),
-    color: input.color,
+    name: input.name.trim().slice(0, 120),
+    description: (input.description ?? '').trim().slice(0, 1000),
+    color: input.color.slice(0, 20),
     status: input.status ?? 'active',
     progressMode: input.progressMode ?? 'auto',
-    manualProgress: input.manualProgress ?? 0,
+    manualProgress: Math.max(0, Math.min(100, Math.round(input.manualProgress ?? 0))),
     createdAt: now,
     updatedAt: now,
   };
   await db.projects.add(project);
+
+  if (activeCloudUid) {
+    const base = `users/${activeCloudUid}`;
+    try {
+      await setDoc(
+        doc(firestoreDb, `${base}/projects`, project.id),
+        toFirestoreProjectPayload(project, activeCloudUid, true)
+      );
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `${base}/projects/${project.id}`);
+    }
+  }
+
   return project;
 }
 
@@ -763,25 +1122,68 @@ export async function updateProject(
 ): Promise<void> {
   const existing = await db.projects.get(projectId);
   if (!existing) return;
-  await db.projects.update(projectId, {
+  const next: Project = {
+    ...existing,
     ...patch,
-    name: patch.name !== undefined ? patch.name.trim() : existing.name,
-    description: patch.description !== undefined ? patch.description.trim() : existing.description,
+    name: patch.name !== undefined ? patch.name.trim().slice(0, 120) : existing.name,
+    description: patch.description !== undefined ? patch.description.trim().slice(0, 1000) : existing.description,
+    manualProgress:
+      patch.manualProgress !== undefined
+        ? Math.max(0, Math.min(100, Math.round(patch.manualProgress)))
+        : existing.manualProgress,
     updatedAt: new Date().toISOString(),
-  });
+  };
+
+  await db.projects.put(next);
+
+  if (activeCloudUid) {
+    const base = `users/${activeCloudUid}`;
+    try {
+      await updateDoc(doc(firestoreDb, `${base}/projects`, projectId), {
+        name: next.name,
+        description: next.description,
+        color: next.color,
+        status: next.status,
+        progressMode: next.progressMode,
+        manualProgress: next.manualProgress,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `${base}/projects/${projectId}`);
+    }
+  }
 }
 
 export async function deleteProject(projectId: string, unlinkTasks = true): Promise<void> {
+  let linkedTaskIds: string[] = [];
   await db.transaction('rw', [db.projects, db.tasks], async () => {
     await db.projects.delete(projectId);
     if (unlinkTasks) {
       const linked = await db.tasks.where('projectId').equals(projectId).toArray();
+      linkedTaskIds = linked.map((t) => t.id);
       const now = new Date().toISOString();
       await Promise.all(
         linked.map((t) => db.tasks.update(t.id, { projectId: null, updatedAt: now }))
       );
     }
   });
+
+  if (activeCloudUid) {
+    const base = `users/${activeCloudUid}`;
+    try {
+      const batch = writeBatch(firestoreDb);
+      for (const tid of linkedTaskIds) {
+        batch.update(doc(firestoreDb, `${base}/tasks`, tid), {
+          projectId: null,
+          updatedAt: serverTimestamp(),
+        });
+      }
+      batch.delete(doc(firestoreDb, `${base}/projects`, projectId));
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `${base}/projects/${projectId}`);
+    }
+  }
 }
 
 // ============================================================================
@@ -790,12 +1192,25 @@ export async function deleteProject(projectId: string, unlinkTasks = true): Prom
 
 export async function updateSettings(patch: Partial<Omit<AppSettings, 'id'>>): Promise<void> {
   const current = (await db.settings.get('default')) ?? DEFAULT_SETTINGS;
-  await db.settings.put({
+  const next: AppSettings = {
     ...current,
     ...patch,
     id: 'default',
     updatedAt: new Date().toISOString(),
-  });
+  };
+  await db.settings.put(next);
+
+  if (activeCloudUid) {
+    const base = `users/${activeCloudUid}`;
+    try {
+      await setDoc(
+        doc(firestoreDb, `${base}/settings`, 'default'),
+        toFirestoreSettingsPayload(next, activeCloudUid)
+      );
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `${base}/settings/default`);
+    }
+  }
 }
 
 export async function exportAllData(): Promise<ExportBundle> {
@@ -808,7 +1223,6 @@ export async function exportAllData(): Promise<ExportBundle> {
     db.settings.get('default'),
   ]);
 
-  // Attach association IDs for full structural clarity
   const enrichedTasks: Task[] = tasks.map((t) => ({
     ...t,
     progressHistoryIds: progressLogs.filter((p) => p.taskId === t.id).map((p) => p.id),
@@ -870,6 +1284,12 @@ export async function importAllData(
   let importedProjects = 0;
   let skippedTasks = 0;
 
+  let uploadedProjects: Project[] = [];
+  let uploadedTasks: Task[] = [];
+  let uploadedProg: ProgressLog[] = [];
+  let uploadedAct: ActivityNode[] = [];
+  let uploadedSch: ScheduleLog[] = [];
+
   await db.transaction(
     'rw',
     [db.tasks, db.projects, db.progressLogs, db.activityNodes, db.scheduleLogs, db.settings, db.meta],
@@ -892,6 +1312,11 @@ export async function importAllData(
           await db.settings.put({ ...settings, id: 'default' });
         }
 
+        uploadedProjects = projects;
+        uploadedTasks = tasks;
+        uploadedProg = progressLogs;
+        uploadedAct = activityNodes;
+        uploadedSch = scheduleLogs;
         importedTasks = tasks.length;
         importedProjects = projects.length;
       } else {
@@ -921,12 +1346,32 @@ export async function importAllData(
         if (newAct.length) await db.activityNodes.bulkAdd(newAct);
         if (newSch.length) await db.scheduleLogs.bulkAdd(newSch);
 
+        uploadedProjects = newProjects;
+        uploadedTasks = newTasks;
+        uploadedProg = newProg;
+        uploadedAct = newAct;
+        uploadedSch = newSch;
         importedTasks = newTasks.length;
         importedProjects = newProjects.length;
       }
       await db.meta.put({ key: 'initial_seeded', value: 'true' });
     }
   );
+
+  if (activeCloudUid) {
+    if (mode === 'overwrite') {
+      await clearCloudUserData(activeCloudUid);
+    }
+    const finalSettings = (await db.settings.get('default')) ?? DEFAULT_SETTINGS;
+    await uploadLocalSnapshotToCloud(activeCloudUid, {
+      projects: uploadedProjects,
+      tasks: uploadedTasks,
+      progressLogs: uploadedProg,
+      activityNodes: uploadedAct,
+      scheduleLogs: uploadedSch,
+      settings: finalSettings,
+    });
+  }
 
   return { importedTasks, importedProjects, skippedTasks };
 }
@@ -946,4 +1391,8 @@ export async function clearAllData(): Promise<void> {
       await db.meta.put({ key: 'initial_seeded', value: 'true' });
     }
   );
+
+  if (activeCloudUid) {
+    await clearCloudUserData(activeCloudUid);
+  }
 }

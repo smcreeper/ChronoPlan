@@ -1,15 +1,37 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { onAuthStateChanged, User } from 'firebase/auth';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   CalendarRange,
   CheckSquare,
+  Cloud,
+  CloudOff,
   FolderKanban,
   LayoutDashboard,
   Plus,
   Settings,
   WifiOff,
 } from 'lucide-react';
-import { db, DEFAULT_SETTINGS, initializeDatabase } from './db/database';
+import {
+  cloudCollectionHasData,
+  ensureUserProfileDoc,
+  subscribeUserCloudData,
+  uploadLocalSnapshotToCloud,
+} from './db/cloudSync';
+import {
+  db,
+  DEFAULT_SETTINGS,
+  getLocalSnapshotBundle,
+  initializeDatabase,
+  replaceLocalActivityNodes,
+  replaceLocalProgressLogs,
+  replaceLocalProjects,
+  replaceLocalScheduleLogs,
+  replaceLocalSettings,
+  replaceLocalTasks,
+  setActiveCloudUid,
+} from './db/database';
+import { auth, signInWithGoogle, signOutUser } from './firebase';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { NavTab, Task, TaskFilterState } from './types/models';
 import { toLocalDateString } from './utils/dateUtils';
@@ -33,6 +55,10 @@ const NAV_ITEMS: { key: NavTab; label: string; icon: React.ComponentType<{ class
 
 export default function App() {
   const [dbReady, setDbReady] = useState(false);
+  const [cloudUser, setCloudUser] = useState<User | null>(null);
+  const [syncState, setSyncState] = useState<'local' | 'syncing' | 'synced' | 'error'>('local');
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
+
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
@@ -52,6 +78,95 @@ export default function App() {
   useEffect(() => {
     initializeDatabase().then(() => setDbReady(true));
   }, []);
+
+  // Auth & Real-time Firestore Synchronization
+  useEffect(() => {
+    if (!dbReady) return;
+    let unsubCloud: (() => void) | null = null;
+    let cancelled = false;
+
+    const unsubAuth = onAuthStateChanged(auth, async (user) => {
+      if (unsubCloud) {
+        unsubCloud();
+        unsubCloud = null;
+      }
+
+      if (!user) {
+        setCloudUser(null);
+        setActiveCloudUid(null);
+        setSyncState('local');
+        return;
+      }
+
+      setCloudUser(user);
+      setActiveCloudUid(user.uid);
+      setSyncState('syncing');
+      setSyncNotice(null);
+
+      try {
+        await ensureUserProfileDoc(user);
+        const hasCloudData = await cloudCollectionHasData(user.uid);
+        if (!hasCloudData) {
+          const localBundle = await getLocalSnapshotBundle();
+          if (localBundle.tasks.length > 0 || localBundle.projects.length > 0) {
+            await uploadLocalSnapshotToCloud(user.uid, localBundle);
+          }
+        }
+
+        if (cancelled) return;
+
+        unsubCloud = subscribeUserCloudData(user.uid, {
+          onProjects: (items) => {
+            replaceLocalProjects(items);
+            setSyncState('synced');
+          },
+          onTasks: (items) => {
+            replaceLocalTasks(items);
+            setSyncState('synced');
+          },
+          onProgressLogs: (items) => {
+            replaceLocalProgressLogs(items);
+          },
+          onActivityNodes: (items) => {
+            replaceLocalActivityNodes(items);
+          },
+          onScheduleLogs: (items) => {
+            replaceLocalScheduleLogs(items);
+          },
+          onSettings: (item) => {
+            if (item) replaceLocalSettings(item);
+          },
+        });
+      } catch (err) {
+        console.error('Cloud sync setup error:', err);
+        setSyncState('error');
+        setSyncNotice('云同步连接失败，当前暂使用本地缓存。');
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      unsubAuth();
+      if (unsubCloud) unsubCloud();
+    };
+  }, [dbReady]);
+
+  const handleSignIn = async () => {
+    try {
+      setSyncNotice(null);
+      await signInWithGoogle();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      if (!msg.includes('popup-closed-by-user')) {
+        setSyncNotice('登录失败，请检查弹窗拦截设置或稍后重试。');
+      }
+    }
+  };
+
+  const handleSignOut = async () => {
+    await signOutUser();
+    setSyncNotice(null);
+  };
 
   const tasks = useLiveQuery(() => db.tasks.toArray(), [], []);
   const projects = useLiveQuery(() => db.projects.toArray(), [], []);
@@ -134,7 +249,7 @@ export default function App() {
   if (!dbReady) {
     return (
       <div className="min-h-dvh flex items-center justify-center bg-[#F8F9FA] dark:bg-[#0B0F17] text-sm text-slate-500">
-        正在加载本地数据库...
+        正在初始化本地与云同步引擎...
       </div>
     );
   }
@@ -217,24 +332,70 @@ export default function App() {
           {!isOnline && (
             <div className="flex items-center gap-2 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
               <WifiOff className="w-3.5 h-3.5 shrink-0" />
-              <span>离线模式运行中</span>
+              <span>离线缓存运行中</span>
             </div>
           )}
+
+          {cloudUser ? (
+            <button
+              type="button"
+              onClick={() => setActiveTab('settings')}
+              className="w-full flex items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-800 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
+            >
+              <Cloud className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] font-medium text-slate-900 dark:text-slate-100 truncate">
+                  {syncState === 'syncing' ? '正在云同步...' : '网页端云同步中'}
+                </div>
+                <div className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                  {cloudUser.email}
+                </div>
+              </div>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleSignIn}
+              className="w-full flex items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-800 px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
+            >
+              <CloudOff className="w-4 h-4 text-slate-400 shrink-0" />
+              <span>登录开启网页同步</span>
+            </button>
+          )}
+
           <PWAInstallButton variant="compact" />
         </div>
       </aside>
 
       {/* Mobile Sticky Header */}
-      <header className="lg:hidden sticky top-0 z-30 h-12 pt-safe bg-white/90 dark:bg-slate-950/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-4 flex items-center justify-between gap-4">
+      <header className="lg:hidden sticky top-0 z-30 h-12 pt-safe bg-white/90 dark:bg-slate-950/90 backdrop-blur-md border-b border-slate-200 dark:border-slate-800 px-4 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 min-w-0">
           <span className="font-display text-base font-bold tracking-tight text-slate-900 dark:text-slate-100 whitespace-nowrap shrink-0">
             时序
           </span>
-          {!isOnline && (
+          {!isOnline ? (
             <span className="inline-flex items-center gap-1 text-[11px] text-amber-700 dark:text-amber-400 whitespace-nowrap">
               <WifiOff className="w-3 h-3" />
               <span>离线</span>
             </span>
+          ) : cloudUser ? (
+            <button
+              type="button"
+              onClick={() => setActiveTab('settings')}
+              className="inline-flex items-center gap-1 text-[11px] text-emerald-700 dark:text-emerald-400 whitespace-nowrap"
+            >
+              <Cloud className="w-3 h-3" />
+              <span>{syncState === 'syncing' ? '同步中' : '已同步'}</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleSignIn}
+              className="inline-flex items-center gap-1 text-[11px] text-blue-600 dark:text-blue-400 whitespace-nowrap"
+            >
+              <CloudOff className="w-3 h-3" />
+              <span>开启同步</span>
+            </button>
           )}
         </div>
 
@@ -251,6 +412,19 @@ export default function App() {
       {/* Main Content Viewport */}
       <main className="flex-1 lg:pl-60 pb-20 lg:pb-8">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6">
+          {syncNotice && (
+            <div className="mb-4 rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50 dark:bg-amber-950/40 px-3.5 py-2.5 text-xs text-amber-800 dark:text-amber-200 flex items-center justify-between gap-2">
+              <span>{syncNotice}</span>
+              <button
+                type="button"
+                onClick={() => setSyncNotice(null)}
+                className="text-amber-700 dark:text-amber-300 underline shrink-0"
+              >
+                关闭
+              </button>
+            </div>
+          )}
+
           {activeTab === 'dashboard' && (
             <DashboardView
               tasks={tasks}
@@ -258,6 +432,8 @@ export default function App() {
               progressLogs={progressLogs}
               activityNodes={activityNodes}
               settings={settings}
+              cloudUser={cloudUser}
+              onSignIn={handleSignIn}
               onSelectTask={(id) => setSelectedTaskId(id)}
               onOpenNewTaskModal={() => openNewTaskModal()}
               onNavigateTasks={handleNavigateTasksPreset}
@@ -312,7 +488,14 @@ export default function App() {
           )}
 
           {activeTab === 'settings' && (
-            <SettingsView settings={settings} stats={dbStats} />
+            <SettingsView
+              settings={settings}
+              cloudUser={cloudUser}
+              syncState={syncState}
+              onSignIn={handleSignIn}
+              onSignOut={handleSignOut}
+              stats={dbStats}
+            />
           )}
         </div>
       </main>
