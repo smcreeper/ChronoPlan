@@ -1,0 +1,6 @@
+{
+  "name": "时序 ChronoPlan",
+  "description": "手机端优先的本地个人项目管理、时间轴甘特图与执行追踪应用，离线可用，数据完全保存在本地设备。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
